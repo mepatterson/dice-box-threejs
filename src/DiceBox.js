@@ -914,7 +914,24 @@ class DiceBox {
 		return notationVectors
 	}
 
-	clearDice() {
+	// Removes every die. With {fade: ms} the canvas fades out first (a CSS opacity transition, so
+	// nothing is re-rendered) and a promise resolves once the dice are gone. A roll that starts
+	// mid-fade cancels it.
+	clearDice({ fade = 0 } = {}) {
+		const token = ++this.clearToken;
+		const canvas = this.renderer && this.renderer.domElement;
+		if (fade > 0 && canvas && this.diceList.length) {
+			canvas.style.transition = `opacity ${fade}ms ease-out`;
+			canvas.style.opacity = '0';
+			return new Promise(resolve => setTimeout(resolve, fade)).then(() => {
+				if (token === this.clearToken) this.clearDice();
+			});
+		}
+		if (canvas) {
+			canvas.style.transition = '';
+			canvas.style.opacity = '';
+		}
+
 		this.running = false;
 		let dice;
 		while (dice = this.diceList.pop()) {
@@ -922,8 +939,23 @@ class DiceBox {
 			if (dice.body) this.world.removeBody(dice.body);
 		}
 		this.renderer.render(this.scene, this.camera);
+	}
 
-		setTimeout(() => { this.renderer.render(this.scene, this.camera); }, 100);
+	// Tears the box down: stops listening for resizes, frees GPU memory and removes the canvas.
+	dispose() {
+		this.clearDice();
+		window.removeEventListener("resize", this.onResize);
+		if (this.resizeObserver) this.resizeObserver.disconnect();
+		this.DiceFactory.dispose();
+		if (this.light) this.light.dispose();
+		if (this.desk) {
+			this.desk.geometry.dispose();
+			this.desk.material.dispose();
+		}
+		this.renderer.dispose();
+		this.renderer.forceContextLoss();
+		this.renderer.domElement.remove();
+		this.initialized = false;
 	}
 
 	getDiceResults(id){
@@ -1027,6 +1059,11 @@ class DiceBox {
 	async add(notationSting){
 		let dieCount = this.diceList.length
 		if(!dieCount) return this.roll(notationSting)
+
+		// keep the dice on the table if a fade-out was under way
+		++this.clearToken
+		this.renderer.domElement.style.transition = ''
+		this.renderer.domElement.style.opacity = ''
 
 		let addNotationVectors = this.startClickThrow(notationSting)
 		let diceIdArray = []
