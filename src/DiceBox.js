@@ -939,6 +939,7 @@ class DiceBox {
 		if(this.rolling) {
 			this.clearDice();
 			this.rolling = false
+			if (this.pendingWorldBox) this.makeWorldBox()
 		}
 
 		let vector = { x: (Math.random() * 2 - 0.5) * this.display.currentWidth, y: -(Math.random() * 2 - 0.5) * this.display.currentHeight };
