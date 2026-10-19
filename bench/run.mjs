@@ -8,6 +8,8 @@
 //   --rolls=50                  override the roll count of every profile
 //   --seed=42                   request generator seed
 //   --no-shots / --shots-only   skip or only take the showcase screenshots
+//   --multi                     multi-theme memory, crowd frame times and first-throw latency instead
+//   --multi --table             only a screenshot of eight players' dice thrown at once
 //
 // The dice box is a full-viewport overlay (position: fixed; inset: 0) over page content, the way
 // an app that animates server-decided rolls would mount it. Chrome runs headless with
@@ -241,6 +243,118 @@ const browser = await chromium.launch({
 	headless: true,
 	args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
 })
+
+if (flags.multi) {
+	await runMulti()
+	process.exit(0)
+}
+
+async function multiPage(index, profile, query = "") {
+	const { context, page } = await openPage(browser, port, index, profile, query)
+	const cdp = await context.newCDPSession(page)
+	await page.evaluate(o => bench.init(undefined, o), builds[index].overrides)
+	return { context, page, cdp }
+}
+
+async function runMulti() {
+	const names = flags.profiles ? String(flags.profiles).split(",") : ["laptop", "phone"]
+	const counts = [[1, 6], [4, 8], [8, 12], [12, 16]]
+	const reports = []
+	if (flags.table) {
+		for (let i = 0; i < builds.length; i++) for (const name of names) {
+			const { context, page } = await multiPage(i, PROFILES[name])
+			console.log(`${builds[i].label} ${name} table correct: ${await page.evaluate(() => bench.table())}`)
+			await page.waitForTimeout(1500)
+			await page.screenshot({ path: join(outDir, `${builds[i].label}-table-${name}.png`) })
+			await context.close()
+		}
+		await browser.close()
+		server.close()
+		return
+	}
+	for (let i = 0; i < builds.length; i++) {
+		const report = { label: builds[i].label, profiles: {} }
+		for (const name of names) {
+			const profile = PROFILES[name]
+			const r = report.profiles[name] = { themes: {}, crowd: {} }
+			for (const [themes, throws] of counts) {
+				console.log(`== ${builds[i].label} ${name}: ${themes} themes`)
+				const { context, page, cdp } = await multiPage(i, profile)
+				const heap0 = await heap(cdp)
+				const rec = await page.evaluate(o => bench.multi(o), { themes, throws, keep: 4, wave: 4 })
+				rec.heapAfter = await heap(cdp)
+				rec.heapInit = heap0
+				r.themes[themes] = rec
+				await context.close()
+			}
+			for (const players of [4, 8]) {
+				console.log(`== ${builds[i].label} ${name}: crowd of ${players}`)
+				const { context, page } = await multiPage(i, profile)
+				r.crowd[players] = await page.evaluate(o => bench.crowd(o), { players })
+				await context.close()
+			}
+			{
+				const { context, page } = await multiPage(i, profile)
+				r.latency = await page.evaluate(() => bench.latency())
+				await context.close()
+			}
+			{
+				const { context, page } = await multiPage(i, profile, "&preload=1")
+				r.latencyPreload = await page.evaluate(() => bench.latency())
+				await context.close()
+			}
+			if (!flags["no-long"]) {
+				console.log(`== ${builds[i].label} ${name}: 40 distinct themes`)
+				const { context, page, cdp } = await multiPage(i, profile)
+				r.long = await page.evaluate(o => bench.multi(o), { throws: 40, keep: 4, wave: 4, samples: 8, distinct: true })
+				r.long.heapAfter = await heap(cdp)
+				await context.close()
+			}
+		}
+		reports.push(report)
+	}
+	await browser.close()
+	server.close()
+	await mkdir(outDir, { recursive: true })
+	await writeFile(join(outDir, "report-multi.json"), JSON.stringify(reports, null, 2))
+	const mb = n => `${(n / 1048576).toFixed(1)} MB`
+	for (const name of names) {
+		const p = PROFILES[name]
+		table(`Themes in rotation, ${name} ${p.width}x${p.height} @${p.dpr}x (dice of the last 4 throws on the table)`, reports.flatMap(r => counts.map(([k]) => {
+			const x = r.profiles[name].themes[k]
+			const failed = x.failures.length
+			return { label: `${r.label} ${k}`, values: {
+				"GPU texture bytes": mb(x.gpuBytes),
+				"textures / geometries / programs": `${x.info.textures}/${x.info.geometries}/${x.info.programs}`,
+				"JS heap after": mb(x.heapAfter),
+				"first throw in a theme (avg)": ms(avg(x.firstUseMs)),
+				"warm throw (avg)": ms(avg(x.warmMs)),
+				"programs by type": Object.entries(x.programs).map(([k, v]) => `${k.replace(/^Mesh|Material$/g, "")}:${v}`).join(" "),
+				"checks passed": `${x.checks - failed}/${x.checks}`,
+			} }
+		})))
+		table(`Crowd, ${name}: players throwing 2 dice each at once`, reports.flatMap(r => [4, 8].map(k => {
+			const x = r.profiles[name].crowd[k]
+			return { label: `${r.label} ${k}`, values: {
+				"frame interval (avg)": ms(x.avgFrameMs),
+				"simulating a throw (avg / worst)": x.simMs == null ? "-" : `${ms(x.simAvgMs)} / ${ms(x.simMs)}`,
+				"render() (avg / worst)": `${ms(x.avgRenderMs)} / ${ms(x.maxRenderMs)}`,
+				"call to all resolved": ms(x.ms),
+				"dice": x.dice,
+				"checks passed": `${x.checks - x.failures.length}/${x.checks}`,
+			} }
+		})))
+		table(`First 1d20 in each new theme, ${name}: call to first frame (new programs)`, reports.flatMap(r => [["", r.profiles[name].latency], [" preload", r.profiles[name].latencyPreload]].map(([tag, rows]) => ({
+			label: r.label + tag,
+			values: Object.fromEntries(rows.map(x => [x.theme, `${ms(x.firstFrameMs)}${x.preloadMs != null ? ` (+${x.preloadMs.toFixed(0)} pre)` : ""} p${x.newPrograms}${x.ok ? "" : " WRONG"}`])),
+		}))))
+		if (!flags["no-long"]) table(`40 distinct themes, ${name}: GPU texture bytes every 8 throws`, reports.map(r => ({
+			label: r.label,
+			values: Object.fromEntries(r.profiles[name].long.samples.map(s => [`after throw ${s.throw}`, `${mb(s.gpu)} t${s.textures} p${s.programs}`]).concat([["JS heap after", mb(r.profiles[name].long.heapAfter)], ["checks", `${r.profiles[name].long.checks - r.profiles[name].long.failures.length}/${r.profiles[name].long.checks}`]])),
+		})))
+	}
+	console.log(`\nFull report: ${join(outDir, "report-multi.json")}`)
+}
 
 const reports = []
 for (let i = 0; i < builds.length; i++) {
