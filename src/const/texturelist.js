@@ -260,6 +260,14 @@ export const TEXTURELIST = {
 		material: 'none',
 		finish: { roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 0.5 }
 	},
+	'sparkles': {
+		name: 'Sparkles',
+		surface: 'sparkles',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 0.35 }
+	},
 	'none': {
 		name: 'none',
 		composite: 'source-over',

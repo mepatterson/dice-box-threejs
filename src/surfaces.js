@@ -71,16 +71,20 @@ function tint(color) {
 
 // Runs `pixel(u, v, out)` over the square and builds one mask per layer plus the height canvas. A
 // layer with `hue` also keeps its alpha and a hue field (0 to 1, wrapping), so it can be coloured per
-// pixel by `spectrumLayer`.
+// pixel by `spectrumLayer`. With `glint` the pixel also sets how much it glints and the direction its
+// fleck is tilted (0 to 1), kept as a glint canvas: red 1, green the tilt, blue 1 minus the glint, so
+// red minus blue is the glint over the bump canvas's white and under its black numbers.
 function build(size, layers, height, pixel, extra = {}) {
 	const masks = layers.map(() => new Float32Array(size * size));
 	const hues = layers.map(layer => (layer.hue ? new Uint8ClampedArray(size * size) : null));
 	const heights = height ? new Float32Array(size * size) : null;
-	const out = { masks: new Float32Array(layers.length), hues: new Float32Array(layers.length), height: 1 };
+	const glints = extra.glint ? [new Float32Array(size * size), new Float32Array(size * size), new Float32Array(size * size)] : null;
+	const out = { masks: new Float32Array(layers.length), hues: new Float32Array(layers.length), height: 1, glint: 0, tilt: 0 };
 	for (let y = 0; y < size; y++) {
 		for (let x = 0; x < size; x++) {
 			out.masks.fill(0);
 			out.height = 1;
+			out.glint = 0;
 			pixel(x / size, y / size, out);
 			const i = y * size + x;
 			for (let k = 0; k < layers.length; k++) {
@@ -88,10 +92,16 @@ function build(size, layers, height, pixel, extra = {}) {
 				if (hues[k]) hues[k][i] = (out.hues[k] - Math.floor(out.hues[k])) * 255;
 			}
 			if (heights) heights[i] = out.height;
+			if (glints) {
+				glints[0][i] = out.tilt;
+				glints[1][i] = 1 - out.glint;
+				glints[2][i] = out.glint > 0.01 ? 1 : 0;
+			}
 		}
 	}
 	return {
 		...extra,
+		glint: glints ? canvasFrom(size, [1, glints[0], glints[1], glints[2]]) : null,
 		layers: layers.map((layer, k) => ({
 			...layer,
 			mask: canvasFrom(size, [...tint(layer.color == 'spectrum' ? 'accent' : layer.color), masks[k]]),
@@ -258,14 +268,51 @@ function opal(size) {
 	}, { glass: 1 });
 }
 
-// Volcanic glass: tiny bright flecks and faint silvery sheen bands.
+// Volcanic glass: tiny bright flecks (the accent, or pale silver) that glint, and faint silvery sheen
+// bands. The flecks are small, so on glass they are drawn at full strength.
 function obsidian(size) {
 	const n1 = valueNoise(51, 128), n2 = valueNoise(52), n3 = valueNoise(53);
-	return build(size, [{ color: '#d8dde6' }], 0, (u, v, o) => {
+	return build(size, [{ color: 'accent', fallback: '#d8dde6', glass: 1 }, { color: '#d8dde6' }], 0, (u, v, o) => {
 		const fleck = smoothstep(0.86, 0.96, n1(u * 150, v * 150)) * smoothstep(0.35, 0.6, n3(u * 6, v * 6));
 		const f = fbm(n2, u * 1.5, v * 9, 4);
-		o.masks[0] = 0.8 * fleck + 0.07 * smoothstep(0.55, 0.75, f);
+		o.masks[0] = 0.8 * fleck;
+		o.masks[1] = 0.07 * smoothstep(0.55, 0.75, f);
+		o.glint = fleck;
+		o.tilt = n1(u * 150 + 57, v * 150 + 31);
+	}, { glint: true });
+}
+
+// Glitter resin: a dense scatter of fine flecks and a few larger ones, in white and the accent, each
+// a tiny mirror tilted its own way (the glint canvas), so they flash as the die turns.
+function sparkles(size) {
+	const next = random(71);
+	const grid = (n, chance, rmin, rmax) => ({
+		n,
+		cells: Array.from({ length: n * n }, () => ({
+			x: next(), y: next(), r: rmin + (rmax - rmin) * next(), tilt: next(), accent: next() < 0.45, bright: 0.5 + 0.5 * next(), on: next() < chance,
+		})),
 	});
+	const grids = [grid(42, 0.6, 1.1, 2), grid(13, 0.45, 2.6, 4)];
+	return build(size, [{ color: '#ffffff', glass: 1 }, { color: 'accent', glass: 1 }], 0, (u, v, o) => {
+		let best = 0, fleck = null;
+		for (const { n, cells } of grids) {
+			const cx = Math.floor(u * n), cy = Math.floor(v * n), cell = size / n;
+			for (let dy = -1; dy <= 1; dy++) {
+				for (let dx = -1; dx <= 1; dx++) {
+					const gx = cx + dx, gy = cy + dy;
+					const c = cells[(((gy % n) + n) % n) * n + (((gx % n) + n) % n)];
+					if (!c.on) continue;
+					const d = Math.hypot((gx + c.x) * cell - u * size, (gy + c.y) * cell - v * size);
+					const cover = 1 - smoothstep(c.r - 0.7, c.r + 0.7, d);
+					if (cover > best) { best = cover; fleck = c; }
+				}
+			}
+		}
+		if (!fleck) return;
+		o.masks[fleck.accent ? 1 : 0] = best * fleck.bright * (fleck.accent ? 0.8 : 0.55);
+		o.glint = best;
+		o.tilt = fleck.tilt;
+	}, { glint: true });
 }
 
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
@@ -293,7 +340,7 @@ export function woodGrain(size = 256) {
 	return canvasFrom(size, [field]);
 }
 
-const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian };
+const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles };
 
 export function makeSurface(name, size = 512) {
 	const generate = GENERATORS[name];

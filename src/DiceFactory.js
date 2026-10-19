@@ -116,6 +116,9 @@ function glassShader(shader, refraction, edges) {
 			vec3 glassColor = mix( glassBody, glassPainted, glassPaint );
 			float glassCover = mix( glassBodyAlpha, 1.0, glassPaint );
 			glassSpecular *= 1.0 - 0.8 * glassPaint;
+			#ifdef DICE_GLINT
+				glassSpecular += diceGlint;
+			#endif
 			float glassAlpha = glassCover + ( 1.0 - glassCover ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
 			gl_FragColor = vec4( ( glassColor * glassCover + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
 			#ifdef DICE_DIM
@@ -163,6 +166,43 @@ function dimShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', `
 		diffuseColor.rgb = mix( vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) ), diffuseColor.rgb, 0.4 ) * 0.55;
 		#include <normal_fragment_begin>`);
+}
+
+// Glitter: where the glint map (a label's bump canvas, red minus blue) has a fleck, the fleck is a
+// tiny mirror tilted its own way (green), so it flashes the room's reflection, tinted by its colour,
+// and a key light when the die turns it just right. Glass adds it to its reflections, the rest to the
+// light. Kept off the numbers, which are black on that canvas.
+const GLINT = { TILT: 0.75, ENV: 2.5, KEY: 4.0 };
+function glintShader(shader, map) {
+	shader.uniforms.glintMap = { value: map };
+	const glint = Object.entries(GLINT).map(([k, v]) => `#define GLINT_${k} ${v.toFixed(3)}`).join('\n');
+	shader.fragmentShader = shader.fragmentShader
+		.replace('void main() {', `${glint}\nuniform sampler2D glintMap;\nvoid main() {`)
+		.replace('#include <opaque_fragment>', `
+			vec3 diceGlint = vec3( 0.0 );
+			vec4 glintTexel = texture2D( glintMap, vMapUv );
+			float glintAmount = saturate( glintTexel.r - glintTexel.b );
+			if ( glintAmount > 0.02 ) {
+				vec3 glintNormal = normalize( geometryNormal );
+				vec3 glintT = normalize( cross( glintNormal, abs( glintNormal.y ) < 0.9 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 ) ) );
+				vec3 glintB = cross( glintNormal, glintT );
+				float glintTurn = glintTexel.g * 6.2832;
+				vec3 glintFacet = normalize( glintNormal + ( cos( glintTurn ) * glintT + sin( glintTurn ) * glintB ) * GLINT_TILT * ( 0.4 + 0.6 * fract( glintTexel.g * 7.13 ) ) );
+				vec3 glintDir = reflect( - geometryViewDir, glintFacet );
+				vec3 glintRoom = vec3( 0.0 );
+				#ifdef ENVMAP_TYPE_CUBE_UV
+					glintRoom = textureCubeUV( envMap, envMapRotation * inverseTransformDirection( glintDir, viewMatrix ), 0.04 ).rgb * envMapIntensity;
+				#endif
+				float glintKey = pow( saturate( dot( glintDir, normalize( vec3( - 0.3, 0.5, 0.82 ) ) ) ), 30.0 ) + 0.7 * pow( saturate( dot( glintDir, normalize( vec3( 0.5, - 0.2, 0.85 ) ) ) ), 30.0 );
+				float glintPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
+				vec3 glintTint = mix( diffuseColor.rgb / max( glintPeak, 0.0001 ), vec3( 1.0 ), 0.35 );
+				vec3 glintFlash = glintRoom * glintRoom * GLINT_ENV + vec3( glintKey * GLINT_KEY );
+				diceGlint = glintTint * glintFlash * glintAmount;
+			}
+			#ifndef GLASS_OPACITY
+				outgoingLight += diceGlint;
+			#endif
+			#include <opaque_fragment>`);
 }
 
 // A soft round glow, white in the middle and fading to nothing at the rim.
@@ -498,6 +538,7 @@ class DiceFactory {
 		mat.map = composite;
 		if (base.metalnessMap) mat.metalnessMap = bump;
 		if (base.bumpMap && !base.bumpMap.isNormalImage) mat.bumpMap = bump;
+		if (base.glintMap) mat.glintMap = bump;
 		mat.ownTextures = [composite, bump];
 		this.variant_cache.set(key, mat);
 		return mat;
@@ -509,6 +550,7 @@ class DiceFactory {
 		mat.onBeforeCompile = base.onBeforeCompile;
 		mat.isGlass = base.isGlass;
 		mat.envBase = base.envBase;
+		mat.glintMap = base.glintMap;
 		return mat;
 	}
 
@@ -766,6 +808,8 @@ class DiceFactory {
 					}
 				}
 			}
+			const surface = this.dice_texture_rand.surface && this.surfaces.get(this.dice_texture_rand.surface);
+			if (surface && surface.glint && canvasTextures.bump && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
 			if (preset && preset.envMapIntensity) {
 				mat.envBase = mat.envMapIntensity;
 				this.applyEnvironment(mat);
@@ -795,6 +839,16 @@ class DiceFactory {
 			preset = { iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 520], ...preset, iridescence: this.dice_iridescence };
 		}
 		return preset;
+	}
+
+	addGlint(mat, map) {
+		const compile = mat.onBeforeCompile;
+		mat.glintMap = map;
+		mat.defines = { ...mat.defines, DICE_GLINT: '' };
+		mat.onBeforeCompile = function (shader, renderer) {
+			glintShader(shader, this.glintMap);
+			compile.call(this, shader, renderer);
+		};
 	}
 
 	makeGlass(mat, opacity) {
@@ -1224,16 +1278,18 @@ class DiceFactory {
 		const accent = this.dice_accent || `#${new THREE.Color(backcolor).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
 		context.globalCompositeOperation = 'source-over';
 		// in glass the layers are inclusions: partly opaque, so the room still shows through them
-		context.globalAlpha = this.dice_material == 'glass' ? surface.glass || 0.5 : 1;
+		const glass = this.dice_material == 'glass';
 		const body = new THREE.Color(backcolor);
 		const lightness = 0.2126 * body.r + 0.7152 * body.g + 0.0722 * body.b;
 		const tone = lightness > 0.55 ? 'pale' : lightness < 0.15 && this.dice_material != 'glass' ? 'deep' : 'clear';
 		surface.layers.forEach((layer, k) => {
 			const spectrum = layer.color == 'spectrum' || (layer.hue && this.dice_rainbow);
-			const image = spectrum ? this.tintedLayer(name, k, layer, this.dice_accent && `#${new THREE.Color(this.dice_accent).getHexString()}`, tone) : layer.color == 'accent' ? this.tintedLayer(name, k, layer, accent) : layer.mask;
+			const image = spectrum ? this.tintedLayer(name, k, layer, this.dice_accent && `#${new THREE.Color(this.dice_accent).getHexString()}`, tone) : layer.color == 'accent' ? this.tintedLayer(name, k, layer, this.dice_accent || layer.fallback || accent) : layer.mask;
+			context.globalAlpha = glass ? layer.glass || surface.glass || 0.5 : 1;
 			this.drawPattern(context, image, ts, index);
 		});
 		context.globalAlpha = 1;
+		if (surface.glint && !isMetal(this.dice_material)) this.drawPattern(contextBump, surface.glint, ts, index);
 		if (surface.height && !isMetal(this.dice_material)) {
 			contextBump.globalAlpha = surface.bump;
 			this.drawPattern(contextBump, surface.height, ts, index);
