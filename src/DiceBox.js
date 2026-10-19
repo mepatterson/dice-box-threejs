@@ -5,6 +5,7 @@ import { DiceNotation } from './DiceNotation.js';
 import { DiceFactory, isMetal } from './DiceFactory.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { DiceColors } from './DiceColors.js';
+import { fontOf, loadFont } from './fonts.js';
 import { THEMES } from './const/themes.js';
 import { MATERIALTYPES } from './const/materialtypes.js';
 // import CannonDebugger from 'cannon-es-debugger'
@@ -36,6 +37,7 @@ const defaultConfig = {
 	glass_refraction: true,
 	glass_edges: 0.35,
 	environment: "studio",
+	fontTimeout: 3000,
 	highlightResult: false,
 	throwFrom: "any",
 	preloadDice: null,
@@ -327,7 +329,9 @@ class DiceBox {
 		} else {
 			colorData = await this.DiceColors.getColorSet(themeConfig)
 		}
-		this.DiceFactory.applyColorSet(colorData)
+		// labels are drawn once and cached, so the number font has to be ready before the first die
+		const fontReady = await loadFont(fontOf(colorData), this.fontTimeout)
+		this.DiceFactory.applyColorSet(colorData, fontReady)
 		this.colorData = colorData
 
 		const material = this.DiceFactory.dice_material

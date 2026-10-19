@@ -24,6 +24,7 @@ export class DicePreset {
 		}
 		Object.assign(this, defaults, DICE[name])
 		this.shape = DICE[name].type || name
+		this.ownFont = 'font' in DICE[name]
 		this.type = name
 
 		this.setLabels(this.labels)

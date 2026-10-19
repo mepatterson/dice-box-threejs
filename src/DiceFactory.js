@@ -3,6 +3,7 @@ import {DicePreset} from './DicePreset.js'
 import {MATERIALTYPES} from "./const/materialtypes"
 import {DICE_GEOM} from "./const/dice"
 import {woodGrain, makeSurface} from "./surfaces.js"
+import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -192,6 +193,7 @@ class DiceFactory {
 		this.surfaces = new Map();
 		this.surface_tints = new Map();
 		this.dice_accent = '';
+		this.label_font = null;
 		this.gild_sweep = { value: 2 };
 
 		this.material_options = {
@@ -429,16 +431,17 @@ class DiceFactory {
 
 	// Variants are drawn with the colorset the label was made with, even if it has changed since.
 	drawLabel(info, forecolor, variant) {
-		const saved = [this.dice_material, this.body_opacity, this.dice_accent];
+		const saved = [this.dice_material, this.body_opacity, this.dice_accent, this.label_font];
 		this.dice_material = info.material;
 		this.body_opacity = info.opacity;
 		this.dice_accent = info.accent;
+		this.label_font = info.font;
 		try {
 			return variant.strike || variant.recolor
 				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant.strike ? variant : null)
 				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
 		} finally {
-			[this.dice_material, this.body_opacity, this.dice_accent] = saved;
+			[this.dice_material, this.body_opacity, this.dice_accent, this.label_font] = saved;
 		}
 	}
 
@@ -710,7 +713,7 @@ class DiceFactory {
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
-				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, highlight: this.colordata && this.colordata.highlight };
+				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, font: this.label_font, highlight: this.colordata && this.colordata.highlight };
 				if (isMetal(this.dice_material)) {
 					mat.onBeforeCompile = metalShader;
 					mat.metalnessMap = canvasTextures.bump;
@@ -825,10 +828,33 @@ class DiceFactory {
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
 		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
 		if (texture.surface) finish += this.dice_material + this.dice_accent;
+		finish += fontKey(this.labelFont(diceobj));
 		if (diceobj.shape == 'd4') {
 			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
 		}
 		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
+	}
+
+	// The colorset's number font, unless the die type brings its own (pips, poker cards, symbols).
+	labelFont(diceobj) {
+		return diceobj.ownFont ? null : this.label_font;
+	}
+
+	widestLabel(diceobj) {
+		if (!diceobj.widest) {
+			const labels = diceobj.labels.flat().filter(label => typeof label == 'string');
+			diceobj.widest = labels.reduce((a, b) => b.length > a.length ? b : a, '') || '0';
+		}
+		return diceobj.widest;
+	}
+
+	// The size, CSS font and downward shift of a label laid out at `size` for Arial.
+	fontAt(diceobj, size) {
+		const font = this.labelFont(diceobj);
+		if (!font) return { size, css: size + 'pt ' + diceobj.font, dy: 0 };
+		const { scale, shift } = fontMetrics(font, this.widestLabel(diceobj));
+		const scaled = size * scale * font.scale;
+		return { size: scaled, css: `${font.weight} ${scaled}pt ${font.family}`.trim(), dy: size * (shift + font.offset) };
 	}
 
 	// With glow ({text}: only that number on a d4, or null for the face's label) it draws just the
@@ -986,17 +1012,14 @@ class DiceFactory {
 					textstartx = textstartx*0.98;
 				}
 
-				context.font =  fontsize+ 'pt '+diceobj.font;
-				contextBump.font =  fontsize+ 'pt '+diceobj.font;
+				let textlines = text.split("\n");
+				let font = this.fontAt(diceobj, textlines.length > 1 ? fontsize / textlines.length : fontsize);
+				fontsize = font.size;
+				context.font = contextBump.font = font.css;
+				textstarty += font.dy;
 
 				let lineHeight = context.measureText("M").width * 1.4;
-				let textlines = text.split("\n");
-
-
 				if (textlines.length > 1) {
-					fontsize = fontsize / textlines.length;
-					context.font =  fontsize+ 'pt '+diceobj.font;
-					contextBump.font =  fontsize+ 'pt '+diceobj.font;
 					lineHeight = context.measureText("M").width * 1.2;
 					textstarty -= (lineHeight * textlines.length) / 2;
 				}
@@ -1015,8 +1038,9 @@ class DiceFactory {
 						contextBump.strokeText(textlines[i], textstartx, textstarty);
 
 						if (textline == '6' || textline == '9') {
-							context.strokeText('  .', textstartx, textstarty);
-							contextBump.strokeText('  .', textstartx, textstarty);
+							const dotx = textstartx + context.measureText(textline).width / 2;
+							context.strokeText('.', dotx, textstarty);
+							contextBump.strokeText('.', dotx, textstarty);
 						}
 					}
 
@@ -1028,8 +1052,9 @@ class DiceFactory {
 					contextBump.fillText(textlines[i], textstartx, textstarty);
 
 					if (textline == '6' || textline == '9') {
-						context.fillText('  .', textstartx, textstarty);
-						contextBump.fillText('  .', textstartx, textstarty);
+						const dotx = textstartx + context.measureText(textline).width / 2;
+						context.fillText('.', dotx, textstarty);
+						contextBump.fillText('.', dotx, textstarty);
 					}
 					if (strike && textline) this.strikeThrough([context, contextBump], textline, textstartx, textstarty - fontsize * 0.1, fontsize, forecolor, outlined ? outlinecolor : null);
 					textstarty += (lineHeight * 1.5);
@@ -1040,8 +1065,9 @@ class DiceFactory {
 			var hw = (ts / 2);
 			var hh = (ts / 2);
 
-			context.font =  (ts / 128 * 24)+'pt '+diceobj.font;
-			contextBump.font =  (ts / 128 * 24)+'pt '+diceobj.font;
+			const font = this.fontAt(diceobj, ts / 128 * 24);
+			context.font = contextBump.font = font.css;
+			const labely = hh - ts * 0.3 + font.dy;
 
 			//draw the numbers
 			for (let i=0; i<text.length; i++) {
@@ -1054,21 +1080,21 @@ class DiceFactory {
 					if (outlined) {
 						context.strokeStyle = outlinecolor;
 						context.lineWidth = 5;
-						context.strokeText(text[i], hw, hh - ts * 0.3);
+						context.strokeText(text[i], hw, labely);
 
 						contextBump.strokeStyle = "#000000";
 						contextBump.lineWidth = 5;
-						contextBump.strokeText(text[i], hw, hh - ts * 0.3);
+						contextBump.strokeText(text[i], hw, labely);
 					}
 
 					//draw label in top middle section
 					context.fillStyle = forecolor;
-					context.fillText(text[i], hw, hh - ts * 0.3);
-					if (glow) this.finishGlow(context, glow, text[i], hw, hh - ts * 0.3);
+					context.fillText(text[i], hw, labely);
+					if (glow) this.finishGlow(context, glow, text[i], hw, labely);
 
 					contextBump.fillStyle = "#000000";
-					contextBump.fillText(text[i], hw, hh - ts * 0.3);
-					if (strike && strike.text == text[i]) this.strikeThrough([context, contextBump], text[i], hw, hh - ts * 0.3 - ts * 0.02, ts / 128 * 24, forecolor, outlined ? outlinecolor : null);
+					contextBump.fillText(text[i], hw, labely);
+					if (strike && strike.text == text[i]) this.strikeThrough([context, contextBump], text[i], hw, labely - ts * 0.02, font.size, forecolor, outlined ? outlinecolor : null);
 				}
 
 				//rotate 1/3 for next label
@@ -1198,8 +1224,9 @@ class DiceFactory {
 		context.restore();
 	}
 
-	applyColorSet(colordata) {
+	applyColorSet(colordata, useFont = true) {
 		this.colordata = colordata;
+		this.label_font = useFont ? fontOf(colordata) : null;
 		this.label_color = colordata.foreground;
 		this.dice_color = colordata.background;
 		this.label_outline = colordata.outline;
