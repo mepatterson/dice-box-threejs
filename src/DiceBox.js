@@ -857,34 +857,39 @@ class DiceBox {
 		let time = Date.now();
 		this.last_time = this.last_time || time - (this.framerate*1000);
 		let time_diff = (time - this.last_time) / 1000;
-		++this.iteration;
 		let neededSteps = Math.floor(time_diff / this.framerate);
 
-		// this.container.style.opacity = '1';
-
-		for(let i = 0; i < neededSteps; i++) {
+		// Check before every step, the way simulateThrow does, so the replay freezes each die on
+		// the same step the simulation did and lands on the same face.
+		let finished = false;
+		let steps = 0;
+		for(; steps < neededSteps; steps++) {
+			if (this.running == threadid && this.throwFinished()) {
+				finished = true;
+				break;
+			}
+			++this.iteration;
 			this.world.step(this.framerate);
-			// this.cannonDebugger.update()
 			++this.steps;
 		}
 
 		// update physics interactions visually
-		for (let i in this.scene.children) {
-			let interact = this.scene.children[i];
-			if (interact.body != undefined) {
-				interact.position.copy(interact.body.position);
-				interact.quaternion.copy(interact.body.quaternion);
+		for (let i = 0, l = this.diceList.length; i < l; i++) {
+			const dicemesh = this.diceList[i];
+			if (dicemesh.body) {
+				dicemesh.position.copy(dicemesh.body.position);
+				dicemesh.quaternion.copy(dicemesh.body.quaternion);
 			}
 		}
 
 		this.renderer.render(this.scene, this.camera);
-		this.last_time = this.last_time + neededSteps*this.framerate*1000;
-
+		this.last_time = this.last_time + steps*this.framerate*1000;
 
 		// roll finished
-		if (this.running == threadid && this.throwFinished()) {
+		if (this.running == threadid && finished) {
 			this.running = false;
 			this.rolling = false;
+			if (this.pendingWorldBox) this.makeWorldBox();
 			if(callback) callback.call(this, this.notationVectors);
 			
 			this.running = Date.now();
