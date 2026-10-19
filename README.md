@@ -34,9 +34,17 @@ const defaultConfig = {
 	light_intensity: 0.7,
 	baseScale: 100,
 	strength: 1, // toss strength of dice
+	maxPixelRatio: 2, // caps devicePixelRatio; 3x phones render at 2x
+	rollingPixelRatio: null, // e.g. 1 to render moving dice at 1x and the settled dice at full ratio
+	textureScale: 0.5, // label texture resolution relative to the original 512px faces
+	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	onRollComplete: () => {}
 }
 ```
+
+`theme_material` applies to stock colorsets. A `theme_customColorset` takes its material from its
+own `material` key (for example `material: "glass"`); without one it renders with the plain
+(Phong) material.
 
 ## Getting Results
 ### There are three ways to get results
@@ -67,6 +75,40 @@ As mentioned previously, this project was forked for it's predeterministic rolli
 ```
 Box.roll("6d6@4,4,4,4,4,4") // rolls six dice that will land on 4's
 ```
+
+## Clearing and teardown
+```
+Box.clearDice()                      // remove the dice now
+await Box.clearDice({ fade: 400 })   // fade the canvas out over 400 ms, then remove them
+await Box.preload(["d20", "d6"])     // optional: build textures and compile shaders ahead of the first roll
+Box.dispose()                        // stop listening for resizes, free GPU memory, remove the canvas
+```
+A roll or `add()` that starts during a fade cancels it. Dice share cached geometry, textures and
+materials, so clearing frees nothing per die and memory stays flat across rolls; `dispose()` frees
+the caches. Call it when the element goes away (for example on a page navigation), since browsers
+cap the number of live WebGL contexts.
+
+## Full-viewport overlay
+The canvas is transparent apart from the dice and their shadows, so the box works as an overlay
+over a page:
+```
+#dice-box { position: fixed; inset: 0; pointer-events: none; }
+```
+The box follows window and container resizes (it uses a `ResizeObserver`). Walls sit just inside
+the container edges, so dice bounce off the viewport edges. A resize during a throw moves the walls
+once the dice settle (moving them mid-throw would change where the dice land), and resting dice
+that end up outside a smaller box slide back in.
+
+## Development
+```
+npm run build   # dist/dice-box-threejs.es.js (minified, three and cannon-es bundled) and .umd.js
+npm run bench   # predetermined-roll checks, timing, memory and bundle size in headless Chrome
+node bench/run.mjs main=path/to/old.es.js branch=dist/dice-box-threejs.es.js --profiles=phone,laptop
+```
+The bench needs Chrome installed. It renders with SwiftShader (software GL), so frame times are
+only meaningful relative to another build. See `docs/ARCHITECTURE.md` for how a roll works.
+
+Built on three.js r186 (sRGB output, physically based light units) and cannon-es 0.20.
 
 ## Notes
 In order to use textures or sounds, you will need to manually copy the assets out of the `./public` folder and into your static assets folder where you're building your app.

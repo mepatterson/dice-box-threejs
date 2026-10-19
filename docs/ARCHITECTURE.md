@@ -38,15 +38,18 @@ die land on a value chosen in advance.
    steps lands each die on the same face.
 5. **Relabel (the predetermined trick).** For every forced result that differs from the
    simulated face, `swapDiceFace` swaps which material (label texture) is drawn on the face
-   that will end up on top and the face that carries the wanted number. The geometry's face
-   groups carry a `materialIndex`, so swapping those indices, or the materials they point at,
-   moves the labels without touching physics. A d4 shows three numbers per face, so
-   `swapDiceFace_D4` rotates every face index and swaps in the label set rotated by the
-   same amount.
+   that will end up on top and the face that carries the wanted number. Each face group of the
+   geometry has a `materialIndex`; the mesh gets its own copy of the material array with the
+   two entries swapped, and a `faceMap` that tells `getFaceValue` which label each face group
+   now shows. Physics and the shared geometry are untouched. A d4 shows three numbers per
+   face, so `swapDiceFace_D4` rotates every face by the difference and uses the label set
+   rotated by the same amount. The stored result is cleared so the replay reads the forced
+   value.
 6. **Animate.** `animateThrow` runs on `requestAnimationFrame`, steps the world as many
-   fixed steps as wall-clock time allows, copies body positions and quaternions to the
-   meshes, renders, and checks `throwFinished`. Faces are read again on the relabelled
-   meshes, so the results report the forced values.
+   fixed steps as wall-clock time allows (at most 60 frames a second), copies body positions
+   and quaternions to the meshes and renders. `throwFinished` runs before every step, exactly
+   as in the simulation, so dice freeze on the same step and land on the same face. Faces are
+   read again on the relabelled meshes, so the results report the forced values.
 7. **Results.** When everything sleeps the callback builds the results object
    (`getDiceResults`: sets, rolls, modifier, total), calls `onRollComplete`, dispatches a
    `rollComplete` DOM event and resolves the promise. `animateAfterThrow` renders one more
@@ -66,11 +69,16 @@ and `remove` act on existing dice by id.
   is a cylinder. Geometry is cached per die type.
 - **Textures** (`createTextMaterial`): each face label is drawn to a 2D canvas (colour,
   optional texture image composited in, outlined text) plus a second canvas for the bump
-  map. These become `CanvasTexture`s, cached by type, label and colours.
-- **Materials** (`createMaterials`): one material per label slot. A colorset material of
+  map. The layout is computed on the original square (512px for most dice) and drawn at
+  `textureScale` of it. These become `CanvasTexture`s (sRGB for colour, linear for bump),
+  cached by type, label and colours.
+- **Materials** (`createMaterials`): one material per label slot, cached alongside its
+  texture, so every d20 of one colorset shares the same materials. A colorset material of
   `none` gives `MeshPhongMaterial`, anything else gives `MeshStandardMaterial` with a
   preset from `const/materialtypes.js`. All are transparent with depth testing off,
   which is fine for convex dice drawn back to front.
+- Nothing is created per die except the mesh, its material array and its cannon body, so
+  `clearDice` has nothing to free; `dispose()` frees the caches and the renderer.
 - **Colours** (`DiceColors`): a colorset names foreground, background, outline, an optional
   texture and an optional material. Arrays pick a random entry per die. A custom colorset
   takes its material from `theme_customColorset.material` (or the texture's material);
@@ -78,13 +86,22 @@ and `remove` act on existing dice by id.
 
 ## Scene, render and physics loops
 
-- `setDimensions` builds the camera (20 degree FOV, looking straight down), a spotlight
-  that casts the shadows, a hemisphere light, and an invisible `ShadowMaterial` plane as the
-  table. It runs on `initialize` and on debounced window resizes.
-- `makeWorldBox` creates the static cannon planes: the floor and four walls at 93% of the
-  container size.
+- `setDimensions` creates, once, the camera (20 degree FOV, looking straight down), a
+  spotlight that casts the shadows, a hemisphere light, and an invisible `ShadowMaterial`
+  plane as the table, then updates them to the container size. The canvas is transparent,
+  so only dice and shadows cover the page. It runs on `initialize` and on debounced window
+  and container (`ResizeObserver`) resizes. The pixel ratio is `devicePixelRatio` capped at
+  `maxPixelRatio`, and `rollingPixelRatio` while dice move if set.
+- World units are half a CSS pixel: the camera height is set so the visible half-height in
+  world units equals the container's height in CSS pixels.
+- `makeWorldBox` creates the static cannon planes once (the floor and four walls) and puts
+  the walls at 93% of the half-extent. During a throw a resize is held back until the dice
+  settle, then the walls move and resting dice outside them slide back in.
 - There is no idle render loop. Frames are rendered only while a throw animates, plus a
-  single render after setup, resize, clear and remove.
+  single render after setup, resize, clear and remove. `clearDice({fade})` fades the canvas
+  with CSS, so a fade-out renders nothing.
+- Lights use three's physical units (r155+): decay 0 and intensities scaled from
+  `light_intensity` so the look matches the old r143 renders; output is sRGB.
 - The physics world uses gravity of `-9.8 * gravity_multiplier` on z, the naive broadphase,
   14 solver iterations and sleeping (dice sleep after 0.9 s below speed 75). The synchronous
   simulation and the animated replay use the same fixed step, which is what makes the
