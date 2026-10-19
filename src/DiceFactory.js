@@ -30,10 +30,12 @@ const defaultConfig = {
 // shimmer: three's film colour for the domed normal and a film that thickens towards the rim, mostly
 // its hue, lit by a blurred reflection of the room with a floor so it shows in a dark room too. Faint
 // reflections are cut on glass, which would drop three's own film term, so this one is added after.
+// The body opacity, refraction and edges are uniforms, so glass dice of every colorset share programs.
 const GLASS_FILM = { STRENGTH: 0.16, SATURATION: 1.3, FLOOR: 0.18 };
-function glassShader(shader, refraction, edges) {
+function glassShader(shader, { refraction, edges, opacity }) {
 	shader.uniforms.glassRefraction = refraction;
 	shader.uniforms.glassEdges = edges;
+	shader.uniforms.glassOpacity = opacity;
 	shader.vertexShader = shader.vertexShader
 		.replace('void main() {', 'varying vec3 vGlassOffset;\nvoid main() {')
 		.replace('#include <project_vertex>', '#include <project_vertex>\nvGlassOffset = mvPosition.xyz - ( modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;');
@@ -42,6 +44,7 @@ function glassShader(shader, refraction, edges) {
 		.replace('void main() {', `${film}
 			uniform vec3 glassRefraction;
 			uniform float glassEdges;
+			uniform float glassOpacity;
 			varying vec3 vGlassOffset;
 			vec3 glassSeen( vec3 dir ) {
 				#ifdef ENVMAP_TYPE_CUBE_UV
@@ -127,6 +130,24 @@ function glassShader(shader, refraction, edges) {
 		`);
 }
 
+function glassCompile(shader) {
+	glassShader(shader, this.glassUniforms);
+}
+
+const clampEdges = amount => {
+	const n = Number(amount);
+	return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.35;
+};
+
+// glass_refraction: false | true | { ior, strength, dispersion } as x: ior, y: strength, z: dispersion
+const refractionOf = (options, vector = new THREE.Vector3()) => {
+	const on = Boolean(options);
+	const o = typeof options === 'object' && options ? options : {};
+	return vector.set(o.ior ?? 1.5, on ? (o.strength ?? 1) : 0, o.dispersion === true ? 0.02 : (o.dispersion || 0));
+};
+
+const PICKS = ['dice_color_rand', 'label_color_rand', 'label_outline_rand', 'dice_texture_rand', 'dice_material_rand', 'edge_color_rand'];
+
 // Metal reflects the environment tinted by the body colour, so a dark body still reads as metal by
 // lifting its brightest channel to a floor: METAL_FLOOR for a coloured body (dark brown becomes
 // copper), but only METAL_DARK_FLOOR for a near-neutral one, so grey, blue-grey and black stay dark
@@ -141,7 +162,7 @@ function metalShader(shader) {
 		float metalPaint = 0.0;
 		#ifdef USE_METALNESSMAP
 			vec4 texelMetalness = texture2D( metalnessMap, vMetalnessMapUv );
-			metalPaint = 1.0 - smoothstep( 0.25, 0.95, dot( texelMetalness.rgb, vec3( 0.3333 ) ) );
+			metalPaint = 1.0 - smoothstep( 0.25, 0.95, texelMetalness.r );
 		#endif
 		float metalPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
 		float metalLow = min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) );
@@ -257,8 +278,6 @@ class DiceFactory {
 		this.refraction = { value: new THREE.Vector3(1.5, 0, 0) };
 		this.edges = { value: 0.35 };
 		this.maxAnisotropy = 1;
-		this.glow_cache = new Map();
-		this.variant_cache = new Map();
 		this.halo_cache = new Map();
 		this.halo_texture = null;
 		this.surfaces = new Map();
@@ -269,6 +288,9 @@ class DiceFactory {
 		this.label_font = null;
 		this.gild_sweep = { value: 2 };
 		this.glint_state = { value: new THREE.Vector2(0, 0) };
+		this.themes = new Map();
+		this.theme = null;
+		this.themeCache = 8;
 
 		this.material_options = {
 			specular: 0x777777,
@@ -296,30 +318,14 @@ class DiceFactory {
 	// Frees every cached geometry, texture and material on the GPU.
 	dispose() {
 		Object.values(this.geometries).forEach(geom => geom && geom.dispose());
-		Object.values(this.materials_cache).forEach(entry => {
-			entry.composite && entry.composite.dispose();
-			entry.bump && entry.bump.dispose();
-		});
-		this.mesh_materials_cache.forEach(mat => {
-			if (mat.bumpMap && mat.bumpMap.isNormalImage) mat.bumpMap.dispose();
-			mat.dispose();
-		});
-		this.glow_cache.forEach(mat => {
-			if (mat.emissiveMap) mat.emissiveMap.dispose();
-			(mat.ownTextures || []).forEach(texture => texture && texture.dispose());
-			mat.dispose();
-		});
-		this.variant_cache.forEach(mat => {
-			(mat.ownTextures || []).forEach(texture => texture && texture.dispose());
-			mat.dispose();
-		});
+		this.themes.forEach(theme => this.disposeTheme(theme));
 		this.halo_cache.forEach(mat => mat.dispose());
 		if (this.halo_texture) this.halo_texture.dispose();
 		this.geometries = {};
+		this.themes = new Map();
+		this.theme = null;
 		this.materials_cache = {};
 		this.mesh_materials_cache = new Map();
-		this.glow_cache = new Map();
-		this.variant_cache = new Map();
 		this.halo_cache = new Map();
 		this.halo_texture = null;
 		this.surfaces = new Map();
@@ -327,8 +333,92 @@ class DiceFactory {
 		this.wood_grain = null;
 	}
 
+	// A theme is one colorset with its own label textures, materials and highlight variants, so dice
+	// of several colorsets can share the table and each keeps its look. Themes are kept in least
+	// recently used order. Geometry, programs, the procedural surfaces and the wood grain are shared.
+	useTheme(key, colordata, fontReady = true) {
+		let theme = this.themes.get(key);
+		if (theme) this.themes.delete(key);
+		else theme = this.makeTheme(key, colordata, fontReady);
+		this.themes.set(key, theme);
+		this.selectTheme(theme);
+		return theme;
+	}
+
+	// A colorset's own glass_edges or glass_refraction gets its own uniform; otherwise the box's
+	// shared one, which updateConfig changes live.
+	makeTheme(key, colordata, fontReady) {
+		const edges = colordata.glass_edges;
+		return {
+			key, colordata, fontReady, pins: 0,
+			textures: {}, materials: new Map(), glow: new Map(), variants: new Map(), tints: new Map(),
+			edges: edges !== undefined && edges !== null ? { value: clampEdges(edges) } : this.edges,
+			refraction: 'glass_refraction' in colordata ? { value: refractionOf(colordata.glass_refraction) } : this.refraction,
+		};
+	}
+
+	selectTheme(theme) {
+		this.theme = theme;
+		this.applyColorSet(theme.colordata, theme.fontReady);
+		this.materials_cache = theme.textures;
+		this.mesh_materials_cache = theme.materials;
+		this.surface_tints = theme.tints;
+	}
+
+	// Frees the least recently used themes beyond themeCache that no die in `inUse` needs.
+	trimThemes(inUse = new Set()) {
+		const evicted = [];
+		for (const theme of this.themes.values()) {
+			if (this.themes.size <= this.themeCache) break;
+			if (theme === this.theme || theme.pins || inUse.has(theme)) continue;
+			this.themes.delete(theme.key);
+			this.disposeTheme(theme);
+			evicted.push(theme.key);
+		}
+		return evicted;
+	}
+
+	disposeTheme(theme) {
+		Object.values(theme.textures).forEach(entry => {
+			entry.composite && entry.composite.dispose();
+			entry.bump && entry.bump.dispose();
+		});
+		theme.materials.forEach(mat => {
+			if (mat.bumpMap && mat.bumpMap.isNormalImage) mat.bumpMap.dispose();
+			mat.dispose();
+		});
+		[...theme.glow.values(), ...theme.variants.values()].forEach(mat => {
+			if (mat.emissiveMap) mat.emissiveMap.dispose();
+			(mat.ownTextures || []).forEach(texture => texture && texture.dispose());
+			mat.dispose();
+		});
+		theme.textures = {};
+		theme.materials.clear();
+		theme.glow.clear();
+		theme.variants.clear();
+		theme.tints.clear();
+	}
+
 	cachedMaterials() {
-		return [...this.mesh_materials_cache.values(), ...this.glow_cache.values(), ...this.variant_cache.values()];
+		return [...this.themes.values()].flatMap(theme => [...theme.materials.values(), ...theme.glow.values(), ...theme.variants.values()]);
+	}
+
+	ownerOf(base) {
+		return base.diceTheme || this.theme;
+	}
+
+	// The label materials of a die's own theme and colour picks, for a d4 relabelled to a forced result.
+	labelSet(mesh, d4specialindex) {
+		const previous = this.theme;
+		const picks = PICKS.map(key => this[key]);
+		this.selectTheme(mesh.diceTheme);
+		PICKS.forEach(key => { this[key] = mesh.picks[key]; });
+		try {
+			return this.createMaterials(this.get(mesh.notation.type), 0, 0, true, d4specialindex);
+		} finally {
+			if (previous) this.selectTheme(previous);
+			PICKS.forEach((key, i) => { this[key] = picks[i]; });
+		}
 	}
 
 	// Points every cached metal and glass material at a new environment.
@@ -347,12 +437,12 @@ class DiceFactory {
 	}
 
 	// glass_refraction: false | true | { ior, strength, dispersion }
+	// Only glass that uses the box's refraction follows it; a colorset with its own keeps that.
 	setRefraction(options) {
 		const on = Boolean(options);
-		const o = typeof options === 'object' && options ? options : {};
-		this.refraction.value.set(o.ior ?? 1.5, on ? (o.strength ?? 1) : 0, o.dispersion === true ? 0.02 : (o.dispersion || 0));
+		refractionOf(options, this.refraction.value);
 		this.cachedMaterials().forEach(mat => {
-			if (!mat.isGlass || ('GLASS_REFRACTION' in mat.defines) === on) return;
+			if (!mat.isGlass || mat.glassUniforms.refraction !== this.refraction || ('GLASS_REFRACTION' in mat.defines) === on) return;
 			if (on) mat.defines.GLASS_REFRACTION = '';
 			else delete mat.defines.GLASS_REFRACTION;
 			mat.needsUpdate = true;
@@ -361,8 +451,7 @@ class DiceFactory {
 
 	// glass_edges: 0 to 1, how much glass bevels stand out
 	setGlassEdges(amount) {
-		const n = Number(amount);
-		this.edges.value = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.35;
+		this.edges.value = clampEdges(amount);
 	}
 
 	// Which face group points up (down for a d4, which reads the face it rests on).
@@ -505,6 +594,8 @@ class DiceFactory {
 
 	// Variants are drawn with the colorset the label was made with, even if it has changed since.
 	drawLabel(info, forecolor, variant) {
+		const previous = this.theme;
+		if (info.theme) this.selectTheme(info.theme);
 		const saved = [this.dice_material, this.body_opacity, this.dice_accent, this.dice_rainbow, this.label_font];
 		this.dice_material = info.material;
 		this.body_opacity = info.opacity;
@@ -516,13 +607,15 @@ class DiceFactory {
 				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant.strike ? variant : null)
 				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
 		} finally {
+			if (previous) this.selectTheme(previous);
 			[this.dice_material, this.body_opacity, this.dice_accent, this.dice_rainbow, this.label_font] = saved;
 		}
 	}
 
 	dimMaterial(base) {
 		const key = `dim|${base.uuid}`;
-		let mat = this.variant_cache.get(key);
+		const variants = this.ownerOf(base).variants;
+		let mat = variants.get(key);
 		if (mat) return mat;
 		mat = this.cloneMaterial(base);
 		const compile = base.onBeforeCompile;
@@ -532,7 +625,7 @@ class DiceFactory {
 		};
 		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|dim`;
 		if (mat.isGlass) mat.defines.DICE_DIM = '';
-		this.variant_cache.set(key, mat);
+		variants.set(key, mat);
 		return mat;
 	}
 
@@ -541,7 +634,8 @@ class DiceFactory {
 		if (!info) return this.dimMaterial(base);
 		if (text !== null && !info.labels[info.index].includes(text)) return this.dimMaterial(base);
 		const key = `strike|${base.uuid}|${text}`;
-		let mat = this.variant_cache.get(key);
+		const variants = this.ownerOf(base).variants;
+		let mat = variants.get(key);
 		if (mat) return mat;
 		const dim = this.dimMaterial(base);
 		mat = this.cloneMaterial(dim);
@@ -553,7 +647,7 @@ class DiceFactory {
 		if (base.bumpMap && !base.bumpMap.isNormalImage) mat.bumpMap = bump;
 		if (base.glintMap) mat.glintMap = bump;
 		mat.ownTextures = [composite, bump];
-		this.variant_cache.set(key, mat);
+		variants.set(key, mat);
 		return mat;
 	}
 
@@ -562,6 +656,8 @@ class DiceFactory {
 		mat.defines = { ...base.defines };
 		mat.onBeforeCompile = base.onBeforeCompile;
 		mat.isGlass = base.isGlass;
+		mat.glassUniforms = base.glassUniforms;
+		mat.diceTheme = base.diceTheme;
 		mat.envBase = base.envBase;
 		mat.glintMap = base.glintMap;
 		return mat;
@@ -572,7 +668,8 @@ class DiceFactory {
 		if (!info) return base;
 		if (text !== null && !info.labels[info.index].includes(text)) return base;
 		const key = `${base.uuid}|${text}|${intensity}|${style}|${fill}`;
-		let mat = this.glow_cache.get(key);
+		const glows = this.ownerOf(base).glow;
+		let mat = glows.get(key);
 		if (mat) return mat;
 		mat = this.cloneMaterial(base);
 		mat.emissive = new THREE.Color(0xffffff);
@@ -590,7 +687,7 @@ class DiceFactory {
 			const { dark, color } = this.glowColor(info.forecolor);
 			mat.emissiveMap = this.drawLabel(info, color, { text, knockout: dark }).composite;
 		}
-		this.glow_cache.set(key, mat);
+		glows.set(key, mat);
 		return mat;
 	}
 
@@ -637,6 +734,8 @@ class DiceFactory {
 		dicemesh.rerolls = 0;
 		dicemesh.resultReason = 'natural';
 		dicemesh.mass = diceobj.mass
+		dicemesh.diceTheme = this.theme;
+		dicemesh.picks = Object.fromEntries(PICKS.map(key => [key, this[key]]));
 
 		const factory = this;
 		dicemesh.getFaceValue = function() {
@@ -759,8 +858,6 @@ class DiceFactory {
 			const preset = this.materialPreset();
 			if (this.dice_material == 'glass') {
 				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
-				mat.isGlass = true;
-				if (this.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';
 			} else if (preset && (preset.anisotropy || preset.clearcoat)) {
 				mat = new THREE.MeshPhysicalMaterial(preset);
 			} else if (preset) {
@@ -789,7 +886,7 @@ class DiceFactory {
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
-				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, rainbow: this.dice_rainbow, font: this.label_font, highlight: this.colordata && this.colordata.highlight };
+				mat.diceLabel = { theme: this.theme, diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, rainbow: this.dice_rainbow, font: this.label_font, highlight: this.colordata && this.colordata.highlight };
 				if (isMetal(this.dice_material)) {
 					mat.onBeforeCompile = metalShader;
 					mat.metalnessMap = canvasTextures.bump;
@@ -831,6 +928,7 @@ class DiceFactory {
 			mat.transparent = true;
 			mat.depthTest = false;
 			mat.needUpdate = true;
+			mat.diceTheme = this.theme;
 			if (canvasTextures && canvasTextures.key) this.mesh_materials_cache.set(this.materialKey(canvasTextures.key, i, size), mat);
 			materials.push(mat);
 		}
@@ -870,9 +968,14 @@ class DiceFactory {
 	}
 
 	makeGlass(mat, opacity) {
+		const theme = this.theme || this;
 		mat.premultipliedAlpha = true;
-		mat.defines = { ...mat.defines, GLASS_OPACITY: opacity.toFixed(3) };
-		mat.onBeforeCompile = shader => glassShader(shader, this.refraction, this.edges);
+		mat.defines = { ...mat.defines, GLASS_OPACITY: 'glassOpacity' };
+		mat.glassUniforms = { refraction: theme.refraction, edges: theme.edges, opacity: { value: opacity } };
+		mat.onBeforeCompile = glassCompile;
+		mat.isGlass = true;
+		if (theme.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';
+		mat.diceTheme = this.theme;
 		return mat;
 	}
 
@@ -894,8 +997,6 @@ class DiceFactory {
 			envMapIntensity: 0.6
 		}), this.body_opacity * 0.5);
 		mat.defines.GLASS_INTERIOR = '';
-		mat.isGlass = true;
-		if (this.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';
 		mat.envBase = mat.envMapIntensity;
 		this.applyEnvironment(mat);
 		this.mesh_materials_cache.set(key, mat);
@@ -1225,13 +1326,15 @@ class DiceFactory {
 		var compositetexture = new THREE.CanvasTexture(canvas);
 		compositetexture.colorSpace = THREE.SRGBColorSpace;
 		compositetexture.anisotropy = this.maxAnisotropy;
-		var bumpMap;
+		var bumpMap = null;
 		if (glow) return {composite:compositetexture};
-		if (!isTexture) {
+		// The bump canvas is grey (a height and the paint mask) and uploads as one channel, except
+		// where it also carries glitter flecks. Glass without flecks never samples it.
+		const glinting = texture.surface && this.surfaces.get(texture.surface)?.glint && (this.dice_material == 'none' || this.dice_material == 'glass');
+		if (!isTexture && (glinting || this.dice_material != 'glass')) {
 			bumpMap = new THREE.CanvasTexture(canvasBump);
 			bumpMap.anisotropy = this.maxAnisotropy;
-		} else {
-			bumpMap = null;
+			if (!glinting) bumpMap.format = THREE.RedFormat;
 		}
 
 		if (allowcache) {
