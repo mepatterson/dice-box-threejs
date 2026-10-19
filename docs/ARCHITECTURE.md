@@ -15,7 +15,7 @@ die land on a value chosen in advance.
 | `src/DicePreset.js` | One die type (labels, values, mass, inertia, scale) built from `const/dice.js`. |
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
 | `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
-| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, obsidian) and the wood grain. |
+| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian) and the wood grain. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
 ## How a roll flows
@@ -101,13 +101,19 @@ and `remove` act on existing dice by id.
 - **Procedural textures** (`surfaces.js`, `drawSurface`): a texture with a `surface` name is generated the first
   time a label needs it, at 512px with its own seeded value noise, and kept per box (`surfaces`, freed in
   `dispose()`). It is a few alpha masks, each with a colour (fixed, or `accent`: the colorset's `accent` or the
-  body colour lightened), plus an optional height field. Fixed colours are baked into their masks; accent masks are tinted once per colour
+  body colour lightened, or `spectrum`), plus an optional height field. Fixed colours are baked into their masks; accent masks are tinted once per colour
   (`surface_tints`), then drawn into the label canvas over the body colour, turned and shifted per face like
   the wood grain; the height goes faintly into the bump canvas (not on metal, where that canvas is the paint mask; glass has no bump). The numbers are drawn
   last on both canvases, so no grain shows under them. Nothing new reaches the GPU: the pattern lives in the
-  label textures the dice already have. On glass the masks are drawn at half strength, so they read as
-  partly opaque inclusions. A texture's `finish` (roughness, clear coat, iridescence, sheen) is merged into the
-  plastic preset.
+  label textures the dice already have. On glass the masks are drawn at half strength (or the surface's `glass` strength;
+  opal's are full), so they read as partly opaque inclusions. A layer with `hue` also keeps its alpha and a hue field
+  (0 to 1, wrapping), and a `spectrum` layer (or pearl's sheets with the colorset's `rainbow`) is coloured per pixel
+  by `spectrumLayer` through a 256-entry lookup: OKLCH at the layer's lightness and chroma, so every hue is equally
+  light, along `PLAY` (mostly blue, green and violet, as in opal and abalone, no yellow-green), or within 70 degrees of
+  a coloured accent's OKLCH hue. The body sets a tone: pale bodies get softer, thinner colour, near-black opaque ones
+  lighter, fuller colour. These are cached in `surface_tints` like the accent tints, keyed by accent and tone. A texture's
+  `finish` (roughness, clear coat, iridescence, sheen) is merged into the plastic preset (`materialPreset`); glass
+  takes only its iridescence, and a colorset's `iridescence` (0 to 1) sets or adds it on plastic and glass.
 - **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. Each
   die gets a child mesh with one shared `BackSide` material for its back faces. It is created
   before the die, so its lower id sorts it first at the same depth: per die, back faces then
@@ -124,7 +130,11 @@ and `remove` act on existing dice by id.
   glass: a deeper filter of the body colour, a little more opaque, and their grazing reflections
   tinted by the body colour except the bright ones (lamps, windows), which stay white as a thin rim.
   `glass_edges` scales the whitening, brightness, opacity and reflection strength through one shared
-  uniform (`DiceFactory.setGlassEdges`), so it changes live without recompiling; back faces (`GLASS_INTERIOR`) are darker. The paint mask is
+  uniform (`DiceFactory.setGlassEdges`), so it changes live without recompiling; back faces (`GLASS_INTERIOR`) are darker.
+  Iridescent glass (`USE_IRIDESCENCE`) gets a thin-film shimmer added to the reflections after the faint ones are cut
+  (which would drop three's own film term): `evalIridescence` for the domed normal, with the film thickening from
+  the middle of the die to its rim, mostly its hue (`GLASS_FILM` saturation), lit by a blurred reflection of the room
+  with a floor so it shows in a dark room, stronger at grazing angles and kept off the numbers. The paint mask is
   the label alpha above the body's (`GLASS_OPACITY`), used linearly. Glass shadows are lighter.
 - **Environment** (`DiceBox.makeEnvironment`): a PMREM built once, when a colorset first needs
   it, and freed in `dispose()`. The default (`makeStudio`) is a small dark studio (a low band of

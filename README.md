@@ -28,7 +28,7 @@ const defaultConfig = {
 	sound_dieMaterial: 'plastic',
 	theme_customColorset: null,
 	theme_colorset: "white", // see available colorsets in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/colorsets.js
-	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "obsidian", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
+	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
 	theme_material: "glass", // "none" | "metal" | "wood" | "glass" | "plastic"
 	gravity_multiplier: 400,
 	light_intensity: 0.7,
@@ -74,7 +74,7 @@ little darker than the old fully matte finish. Wood without a texture gets a woo
 body colour and a satin varnish, so it is told apart from plastic at a glance.
 
 ### Procedural textures
-Five textures are generated in code instead of loaded from `public/textures`, so they need no asset
+Six textures are generated in code instead of loaded from `public/textures`, so they need no asset
 files. Each is drawn in the colorset's own colours, with a finish to match:
 - `bone`: ivory. Faint warm staining, fine grain lines, tiny pores and the odd hairline crack, a satin
   finish and a very slight bump. Dark brown or near-black numbers read best on it.
@@ -84,7 +84,14 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
 - `stone`: granite. Dark and light mineral grains over a fine speckle with faint pale veins, a satin
   to matte finish and a gentle bump, so light rakes across it.
 - `pearl`: mother of pearl. Soft nacre sheets with hints of rose and green, a clear coat, iridescence
-  and a pink sheen at grazing angles. Dark numbers read best on it.
+  and a pink sheen at grazing angles. Dark numbers read best on it. `rainbow: true` gives the sheets
+  soft colours from the whole spectrum instead of the accent.
+- `opal`: precious opal or abalone. Flowing sheets whose colour sweeps through blue, green and violet
+  with rarer magenta and orange, small bright flecks of fire and an iridescent clear coat. With a
+  coloured `accent` the colours stay within about 70 degrees of its hue (a grey or black accent, or
+  none, gives the full play of colour). Made for black glass (`background: "#000000"`, `material:
+  "glass"`) and also good on deep coloured glass and on pale or near-black plastic, where it is
+  softer and milkier or fuller to match. White numbers read best on dark bodies.
 - `obsidian`: volcanic glass. Tiny bright flecks and faint silvery bands for a near-black body under a
   mirror-like clear coat. White numbers read best; gold looks richer.
 ```
@@ -92,8 +99,20 @@ theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }
 ```
 They default to plastic; `material` (or `theme_material` for a stock colorset) picks another. The
-finish only applies to plastic. Each face shows a different part of the pattern, and the numbers are
+finish applies to plastic; on glass only its iridescence carries over (see below). Each face shows a different part of the pattern, and the numbers are
 painted over it, so they stay as crisp as on plain dice.
+
+### Iridescence
+`pearl` and `opal` have a thin-film iridescence: reflections pick up colours that shift with the
+angle you see a face at, so the dice shimmer as they roll. It shows on plastic and on glass, where it
+reads as a pearly sheen inside the glass that is clear of the numbers. A colorset's `iridescence`
+(0 to 1) sets how strong it is, and adds it to plain plastic or glass too; 0 turns it off:
+```
+theme_customColorset: { name: "black pearl", foreground: "#ffffff", background: "#000000", outline: "#000000", accent: "#f250d4", texture: "pearl", material: "glass", glass_opacity: 0.6 }
+theme_customColorset: { name: "black opal", foreground: "#ffffff", background: "#000000", outline: "#000000", texture: "opal", material: "glass", glass_opacity: 0.6 }
+theme_customColorset: { name: "sapphire", foreground: "#ffffff", background: "#2A6FDB", outline: "#000000", material: "glass", glass_opacity: 0.6, iridescence: 0.8 }
+```
+On glass it costs one more environment lookup and thin-film evaluation per pixel, only for iridescent dice.
 
 ### Reflection environment
 `environment` swaps the studio for a photo of a room, used only for reflections (and glass
