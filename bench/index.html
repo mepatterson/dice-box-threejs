@@ -5,13 +5,23 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>dice-box-threejs bench</title>
 	<style>
-		html, body { margin: 0; background: #22160f; }
-		body.light { background: #f3ece4; }
-		#dice-box { position: relative; width: 390px; height: 384px; overflow: hidden; }
+		html, body { margin: 0; min-height: 100%; font: 16px/1.5 Georgia, serif; color: #f2e6d8; background: #22160f; }
+		body.light { color: #2b1d14; background: #f3ece4; }
+		main { padding: 24px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+		.card { padding: 16px; border-radius: 12px; background: rgb(255 255 255 / 0.06); border: 1px solid rgb(255 255 255 / 0.12); }
+		body.light .card { background: rgb(0 0 0 / 0.04); border-color: rgb(0 0 0 / 0.1); }
+		/* mounted as a full-viewport overlay that ignores the pointer */
+		#dice-box { position: fixed; inset: 0; pointer-events: none; }
 		#dice-box canvas { display: block; }
 	</style>
 </head>
 <body>
+	<main>
+		<div class="card"><h2>Character</h2><p>Strength 3, Dexterity 1, Intelligence 0, Will 2. Hit dice d12.</p></div>
+		<div class="card"><h2>Attack</h2><p>Roll the primary die and add your modifier. Exploding dice roll again.</p></div>
+		<div class="card"><h2>Notes</h2><p>The overlay must leave this text readable and clickable everywhere.</p></div>
+		<div class="card"><h2>Inventory</h2><p>Rope, lantern, three torches, a map of the old mine.</p></div>
+	</main>
 	<div id="dice-box"></div>
 	<script type="module" src="./bench.js"></script>
 </body>

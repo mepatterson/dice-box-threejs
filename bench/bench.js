@@ -39,6 +39,7 @@ function mulberry32(seed) {
 const params = new URLSearchParams(location.search)
 Math.random = mulberry32(Number(params.get("seed") || 1))
 if (params.get("light")) document.body.classList.add("light")
+if (params.get("plain")) document.querySelector("main").hidden = true
 
 const { default: DiceBox } = await import(params.get("bundle"))
 
@@ -68,6 +69,27 @@ function makeRequest(rand, i) {
 	return { notation, sets, adds }
 }
 
+// How far (CSS px) the furthest die vertex pokes outside the box, using the real geometry.
+function overshoot(box) {
+	const w = box.container.clientWidth
+	const h = box.container.clientHeight
+	let worst = 0
+	box.camera.updateMatrixWorld()
+	for (const mesh of box.diceList) {
+		if (!mesh.parent) continue
+		mesh.updateMatrixWorld()
+		const pos = mesh.geometry.getAttribute("position")
+		const v = mesh.position.clone()
+		for (let i = 0; i < pos.count; i += 3) {
+			v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).project(box.camera)
+			const x = ((v.x + 1) / 2) * w
+			const y = ((1 - v.y) / 2) * h
+			worst = Math.max(worst, -x, x - w, -y, y - h)
+		}
+	}
+	return Math.max(0, worst)
+}
+
 function instrument(box) {
 	const stats = { renders: [], frames: [] }
 	const renderer = box.renderer
@@ -75,7 +97,8 @@ function instrument(box) {
 	renderer.render = (scene, camera) => {
 		const t0 = performance.now()
 		render(scene, camera)
-		stats.renders.push([t0, performance.now() - t0])
+		const dice = box.diceList.filter(m => m.parent).length
+		stats.renders.push([t0, performance.now() - t0, dice, dice ? overshoot(box) : 0])
 	}
 	const tick = t => {
 		stats.frames.push(t)
@@ -106,7 +129,7 @@ async function timed(box, stats, fn) {
 	const t0 = performance.now()
 	const result = await fn()
 	const t1 = performance.now()
-	const renders = stats.renders.filter(([t]) => t >= t0 && t <= t1)
+	const renders = stats.renders.filter(([t, , dice]) => t >= t0 && t <= t1 && dice > 0)
 	const frames = window_(stats.frames, t0, t1)
 	const intervals = frames.slice(1).map((t, i) => t - frames[i])
 	return {
@@ -117,15 +140,17 @@ async function timed(box, stats, fn) {
 		avgRenderMs: avg(renders.map(([, d]) => d)),
 		maxRenderMs: renders.length ? Math.max(...renders.map(([, d]) => d)) : 0,
 		avgFrameMs: avg(intervals),
+		maxOvershootPx: Math.max(0, ...renders.filter(([t]) => t > t0 + 600).map(r => r[3])),
+		restOvershootPx: overshoot(box),
 	}
 }
 
 window.bench = {
 	rendererInfo: () => rendererInfo(window.box),
 
-	async init(config = APP_CONFIG) {
+	async init(config = APP_CONFIG, overrides = {}) {
 		const t0 = performance.now()
-		const box = new DiceBox("#dice-box", config)
+		const box = new DiceBox("#dice-box", { ...config, ...overrides })
 		await box.initialize()
 		window.box = box
 		window.stats = instrument(box)
@@ -143,7 +168,8 @@ window.bench = {
 			const req = makeRequest(rand, i)
 			const rec = { notation: req.notation, adds: req.adds.map(a => `1${a.type}@${a.value}`), failures: [] }
 			const roll = await timed(box, stats, () => box.roll(req.notation))
-			Object.assign(rec, { ms: roll.ms, firstRenderMs: roll.firstRenderMs, avgRenderMs: roll.avgRenderMs, maxRenderMs: roll.maxRenderMs, avgFrameMs: roll.avgFrameMs, renders: roll.renders })
+			const { result, ...timing } = roll
+			Object.assign(rec, timing)
 
 			const wanted = req.sets.flatMap(s => s.values)
 			const reported = roll.result.sets.flatMap(s => s.rolls.map(r => Number(r.value)))
@@ -159,6 +185,8 @@ window.bench = {
 				const before = box.diceList.length
 				const res = await timed(box, stats, () => box.add(`1${add.type}@${add.value}`))
 				rec.addMs.push(res.ms)
+				rec.restOvershootPx = Math.max(rec.restOvershootPx, res.restOvershootPx)
+				rec.maxOvershootPx = Math.max(rec.maxOvershootPx, res.maxOvershootPx)
 				const got = Number(res.result[0]?.value)
 				if (got !== add.value) rec.failures.push({ kind: "json", type: add.type, add: true, wanted: add.value, got })
 				const face = faceValues(box)
@@ -173,6 +201,34 @@ window.bench = {
 		}
 		box.clearDice()
 		return records
+	},
+
+	// Renders while nothing moves, then a fade-out clear if the build has one.
+	async idleAndClear() {
+		const box = window.box
+		await box.roll("2d20@14,6")
+		const t0 = performance.now()
+		await new Promise(r => setTimeout(r, 1500))
+		const idleRenders = window.stats.renders.filter(([t]) => t > t0).length
+		const before = rendererInfo(box)
+		const t1 = performance.now()
+		const fading = box.clearDice({ fade: 300 })
+		const hasFade = fading && typeof fading.then === "function"
+		if (hasFade) await fading
+		const fadeRenders = window.stats.renders.filter(([t]) => t > t1).length
+		return { idleRenders, hasFade, fadeMs: performance.now() - t1, fadeRenders, diceLeft: box.diceList.length, opacity: box.renderer.domElement.style.opacity, before, after: rendererInfo(box) }
+	},
+
+	async dispose() {
+		const box = window.box
+		if (typeof box.dispose !== "function") return { supported: false }
+		box.dispose()
+		return { supported: true, canvasRemoved: !document.querySelector("#dice-box canvas") }
+	},
+
+	canvasSize() {
+		const c = window.box.renderer.domElement
+		return { css: [c.clientWidth, c.clientHeight], px: [c.width, c.height], container: [window.box.container.clientWidth, window.box.container.clientHeight], pixelRatio: window.box.renderer.getPixelRatio() }
 	},
 
 	async showcase(notation, seed = 7) {
