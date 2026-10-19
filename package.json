@@ -1,31 +1,31 @@
 {
   "name": "@3d-dice/dice-box-threejs",
   "author": {
-		"name": "Frank Ali"
-	},
-	"description": "A 3D environment for rolling game dice using threejs and cannon-es",
+    "name": "Frank Ali"
+  },
+  "description": "A 3D environment for rolling game dice using threejs and cannon-es",
   "private": false,
   "keywords": [
-		"3D",
-		"dice",
-		"roll",
-		"roller",
-		"javascript",
-		"rpg",
-		"dnd",
-		"d&d",
-		"tabletop"
-	],
+    "3D",
+    "dice",
+    "roll",
+    "roller",
+    "javascript",
+    "rpg",
+    "dnd",
+    "d&d",
+    "tabletop"
+  ],
   "version": "0.0.12",
   "license": "MIT",
   "homepage": "https://fantasticdice.games/",
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/3d-dice/dice-box-threejs"
-	},
-	"bugs": {
-		"url": "https://github.com/3d-dice/dice-box-threejs/issues"
-	},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/3d-dice/dice-box-threejs"
+  },
+  "bugs": {
+    "url": "https://github.com/3d-dice/dice-box-threejs/issues"
+  },
   "dev-files": [
     "src"
   ],
@@ -38,10 +38,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bench": "node bench/run.mjs"
   },
   "devDependencies": {
     "cannon-es-debugger": "^1.0.0",
+    "playwright": "^1.64.1",
     "vite": "^3.0.8"
   },
   "dependencies": {
