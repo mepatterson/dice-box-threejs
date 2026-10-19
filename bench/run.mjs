@@ -3,7 +3,7 @@
 //   node bench/run.mjs                                   # current dist build
 //   node bench/run.mjs main=/path/a.es.js branch=dist/dice-box-threejs.es.js
 //
-// Options: --rolls=50 --dpr=1 --no-shots --seed=42
+// Options: --rolls=50 --dpr=1 --seed=42 --no-shots --shots-only
 //
 // Chrome runs headless with SwiftShader (software GL), so absolute frame and render times are
 // far slower than a real GPU. Compare builds against each other, not against a budget.
@@ -89,6 +89,11 @@ async function runBuild(browser, port, index) {
 	console.log(`\n== ${build.label}: ${build.path}`)
 	const report = { label: build.label, size: sizes(build.path) }
 
+	if (flags["shots-only"]) {
+		await screenshots(browser, port, index)
+		return null
+	}
+
 	const { context, page } = await openPage(browser, port, index)
 	const cdp = await context.newCDPSession(page)
 	report.heapBeforeInit = await heap(cdp)
@@ -102,7 +107,13 @@ async function runBuild(browser, port, index) {
 	report.records = records
 	await context.close()
 
-	if (!flags["no-shots"]) {
+	if (!flags["no-shots"]) await screenshots(browser, port, index)
+	return report
+}
+
+async function screenshots(browser, port, index) {
+	const build = builds[index]
+	{
 		await mkdir(outDir, { recursive: true })
 		const shots = [
 			{ name: "ember", query: "", config: null },
@@ -119,7 +130,6 @@ async function runBuild(browser, port, index) {
 			await context.close()
 		}
 	}
-	return report
 }
 
 function summarize(r) {
@@ -167,6 +177,7 @@ for (let i = 0; i < builds.length; i++) reports.push(await runBuild(browser, por
 await browser.close()
 server.close()
 
+if (flags["shots-only"]) process.exit(0)
 await mkdir(outDir, { recursive: true })
 await writeFile(join(outDir, "report.json"), JSON.stringify(reports, null, 2))
 
