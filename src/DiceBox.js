@@ -5,6 +5,7 @@ import { DiceNotation } from './DiceNotation.js';
 import { DiceFactory } from './DiceFactory.js';
 import { DiceColors } from './DiceColors.js';
 import { THEMES } from './const/themes.js';
+import { MATERIALTYPES } from './const/materialtypes.js';
 // import CannonDebugger from 'cannon-es-debugger'
 
 import { debounce } from "./helpers"
@@ -30,6 +31,7 @@ const defaultConfig = {
 	maxPixelRatio: 2,
 	rollingPixelRatio: null,
 	textureScale: 0.5,
+	glass_opacity: 0.35,
 	preloadDice: null,
 	onRollComplete: () => {},
 	onRerollComplete: () => {},
@@ -40,6 +42,12 @@ const defaultConfig = {
 const SPOT_INTENSITY = 2.0
 const HEMI_INTENSITY = 2.0
 const SHADOW_RADIUS = 4
+const SHADOW_OPACITY = 0.5
+// The environment's soft panels: azimuth and elevation in degrees, size and brightness
+const ENV_PANELS = [
+	[135, 40, 14, 25], [75, 35, 10, 10], [15, 45, 12, 16], [-45, 35, 12, 14], [-105, 40, 10, 9], [-165, 30, 12, 18],
+	[150, 50, 2, 120], [-30, 40, 2, 80], [60, 25, 2, 80],
+]
 
 class DiceBox {
 
@@ -125,7 +133,8 @@ class DiceBox {
 		this.DiceColors = new DiceColors({assetPath: this.assetPath});
 		this.DiceFactory = new DiceFactory({
 			baseScale: this.baseScale,
-			textureScale: this.textureScale
+			textureScale: this.textureScale,
+			glass_opacity: this.glass_opacity
 		});
 		this.DiceFactory.setBumpMapping(true);
 
@@ -296,6 +305,41 @@ class DiceBox {
 		}
 		this.DiceFactory.applyColorSet(colorData)
 		this.colorData = colorData
+
+		const material = this.DiceFactory.dice_material
+		if (MATERIALTYPES[material]?.envMapIntensity && !this.environment && this.renderer) this.environment = this.makeEnvironment()
+		this.DiceFactory.envMap = this.environment || null
+		// light passes through glass, so its shadows are lighter
+		if (this.desk) this.desk.material.opacity = SHADOW_OPACITY * (material == 'glass' ? 0.4 + 0.6 * this.DiceFactory.body_opacity : 1)
+	}
+
+	// Reflections for the metal and glass materials, built once per box: a dark studio with a band
+	// of light low around it and soft panels at mid height, so tilted facets and edges catch
+	// highlights while faces turned to the camera stay clear.
+	makeEnvironment() {
+		const scene = new THREE.Scene()
+		const light = value => new THREE.MeshBasicMaterial({ color: new THREE.Color(value, value, value), side: THREE.DoubleSide })
+		const band = new THREE.Mesh(new THREE.CylinderGeometry(20, 20, 14, 32, 1, true), light(1.5))
+		band.rotation.x = Math.PI / 2
+		band.position.z = 7
+		scene.add(band)
+		const plane = new THREE.PlaneGeometry(1, 1)
+		for (const [azimuth, elevation, size, brightness] of ENV_PANELS) {
+			const a = azimuth * Math.PI / 180, e = elevation * Math.PI / 180
+			const panel = new THREE.Mesh(plane, light(brightness))
+			panel.position.set(Math.cos(e) * Math.cos(a), Math.cos(e) * Math.sin(a), Math.sin(e)).multiplyScalar(20)
+			panel.lookAt(0, 0, 0)
+			panel.scale.setScalar(size)
+			scene.add(panel)
+		}
+		const pmrem = new THREE.PMREMGenerator(this.renderer)
+		const environment = pmrem.fromScene(scene, 0.02).texture
+		pmrem.dispose()
+		scene.children.forEach(mesh => {
+			mesh.geometry.dispose()
+			mesh.material.dispose()
+		})
+		return environment
 	}
 
 	async loadSounds(){
@@ -440,7 +484,7 @@ class DiceBox {
 			this.scene.add(this.light_amb);
 
 			let shadowplane = new THREE.ShadowMaterial();
-			shadowplane.opacity = 0.5;
+			shadowplane.opacity = SHADOW_OPACITY;
 			this.desk = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 1), shadowplane);
 			this.scene.add(this.desk);
 		}
@@ -993,6 +1037,7 @@ class DiceBox {
 		window.removeEventListener("resize", this.onResize);
 		if (this.resizeObserver) this.resizeObserver.disconnect();
 		this.DiceFactory.dispose();
+		if (this.environment) this.environment.dispose();
 		if (this.light) this.light.dispose();
 		if (this.desk) {
 			this.desk.geometry.dispose();

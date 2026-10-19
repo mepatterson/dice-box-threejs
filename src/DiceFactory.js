@@ -9,7 +9,30 @@ import * as CANNON from "cannon-es"
 const defaultConfig = {
 	baseScale: 100,
 	bumpMapping: true,
-	textureScale: 0.5
+	textureScale: 0.5,
+	glass_opacity: 0.35
+}
+
+// Glass writes premultiplied colour so its reflections are added on top of what shows through the
+// body instead of fading with the body's alpha, and a pixel is as opaque as its brightest
+// reflection, so highlights stay solid over a page behind a transparent canvas. Glass scatters
+// little light, so the environment only reflects; faces get more opaque towards grazing angles,
+// and the painted numbers are matte so reflections don't wash them out.
+function glassShader(shader) {
+	shader.fragmentShader = shader.fragmentShader
+		.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''))
+		.replace('#include <opaque_fragment>', `
+			float glassPaint = smoothstep( 0.9, 1.0, diffuseColor.a );
+			diffuseColor.a += ( 1.0 - diffuseColor.a ) * 0.7 * pow( 1.0 - saturate( dot( geometryNormal, geometryViewDir ) ), 2.5 );
+			vec3 glassSpecular = totalSpecular;
+			#ifdef USE_CLEARCOAT
+				glassSpecular = glassSpecular * ( 1.0 - material.clearcoat * Fcc ) + ( clearcoatSpecularDirect + clearcoatSpecularIndirect ) * material.clearcoat;
+			#endif
+			vec3 glassBody = outgoingLight - glassSpecular;
+			glassSpecular *= 1.0 - 0.8 * glassPaint;
+			float glassAlpha = diffuseColor.a + ( 1.0 - diffuseColor.a ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
+			gl_FragColor = vec4( ( glassBody * diffuseColor.a + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
+		`);
 }
 
 class DiceFactory {
@@ -29,6 +52,8 @@ class DiceFactory {
 		this.label_outline = '';
 		this.dice_texture = '';
 		this.dice_material = '';
+		this.body_opacity = 1;
+		this.envMap = null;
 
 		this.material_options = {
 			specular: 0x777777,
@@ -83,7 +108,11 @@ class DiceFactory {
 
 		this.setMaterialInfo();
 
+		// Glass shows its back faces through the front ones. Created first, the interior has the
+		// lower id, so at the same depth it draws before the faces.
+		const interior = this.dice_material == 'glass' ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
 		let dicemesh = new THREE.Mesh(geom, this.createMaterials(diceobj, this.baseScale / 2, 1.0));
+		if (interior) dicemesh.add(interior);
 		dicemesh.result = [];
 		dicemesh.shape = diceobj.shape;
 		dicemesh.rerolls = 0;
@@ -223,9 +252,12 @@ class DiceFactory {
 				materials.push(mat);
 				continue;
 			}
-			if (this.dice_material != 'none') {
+			if (this.dice_material == 'glass') {
+				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(MATERIALTYPES.glass));
+				mat.envMap = this.envMap;
+			} else if (this.dice_material != 'none') {
 				mat = new THREE.MeshStandardMaterial(MATERIALTYPES[this.dice_material]);
-				mat.envMapIntensity = 0;
+				if (mat.envMapIntensity) mat.envMap = this.envMap;
 			} else {
 				mat = new THREE.MeshPhongMaterial(this.material_options);
 			}
@@ -238,12 +270,14 @@ class DiceFactory {
 
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, texture, this.label_color_rand, this.label_outline_rand, this.edge_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
+				// flat bevels would light up end to end like wires
+				if (this.dice_material == 'glass') mat.envMapIntensity = 0.4;
 
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
 
-				if (this.bumpMapping) {
+				if (this.bumpMapping && this.dice_material != 'glass') {
 					if (false) {
 						mat.bumpScale = 0.5;
 					} else {
@@ -279,6 +313,35 @@ class DiceFactory {
 		return materials;
 	}
 
+	makeGlass(mat) {
+		mat.premultipliedAlpha = true;
+		mat.onBeforeCompile = glassShader;
+		return mat;
+	}
+
+	// The back faces of a glass die, drawn as one batch: fainter than the faces and glowing with a
+	// stronger version of the die's colour, like light caught inside tinted glass.
+	interiorMaterial() {
+		const key = `interior|${this.dice_color_rand}|${this.body_opacity}`;
+		let mat = this.mesh_materials_cache.get(key);
+		if (mat) return mat;
+		const color = new THREE.Color(this.dice_color_rand);
+		const hsl = color.getHSL({});
+		mat = this.makeGlass(new THREE.MeshStandardMaterial({
+			color: color,
+			emissive: new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 1.6), Math.min(0.6, Math.max(0.4, hsl.l))),
+			emissiveIntensity: 1.5,
+			roughness: MATERIALTYPES.glass.roughness,
+			metalness: 0,
+			side: THREE.BackSide,
+			transparent: true,
+			depthTest: false,
+			opacity: this.body_opacity * 0.5
+		}));
+		this.mesh_materials_cache.set(key, mat);
+		return mat;
+	}
+
 	materialKey(textureKey, index, size) {
 		return `${textureKey}|${index}|${size}|${this.dice_material}|${this.bumpMapping}`
 	}
@@ -311,10 +374,11 @@ class DiceFactory {
 				textCache += el.src;
 			});
 		}
+		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
 		if (diceobj.shape == 'd4') {
-			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor;
+			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity;
 		}
-		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor;
+		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor + opacity;
 	}
 
 	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache) {
@@ -364,9 +428,11 @@ class DiceFactory {
 		context.scale(px / ts, px / ts);
 		contextBump.scale(px / ts, px / ts);
 
-		// create color
+		// create color; a texture drawn with destination-in brings its own transparency
+		context.globalAlpha = texture.composite == 'destination-in' ? 1 : this.body_opacity;
 		context.fillStyle = backcolor;
 		context.fillRect(0, 0, ts, ts);
+		context.globalAlpha = 1;
 
 		contextBump.fillStyle = "#FFFFFF";
 		contextBump.fillRect(0, 0, ts, ts);
@@ -575,6 +641,7 @@ class DiceFactory {
 		this.dice_texture = colordata.texture;
 		this.dice_material = colordata?.texture?.material || 'none';
 		this.edge_color = colordata.hasOwnProperty("edge") ? colordata.edge:colordata.background;
+		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 	}
 
 	// pass in colorset data from dice-box
