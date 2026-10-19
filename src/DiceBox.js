@@ -241,8 +241,9 @@ class DiceBox {
 		}
 		this.pendingWorldBox = false
 
-		const w = this.display.containerWidth * 0.93
-		const h = this.display.containerHeight * 0.93
+		this.wallScale = this.wallFactor()
+		const w = this.display.containerWidth * this.wallScale
+		const h = this.display.containerHeight * this.wallScale
 		this.box_body.topWall.position.set(0, h, 0);
 		this.box_body.bottomWall.position.set(0, -h, 0);
 		this.box_body.leftWall.position.set(w, 0, 0);
@@ -264,6 +265,14 @@ class DiceBox {
 			body.position.y = y
 			dicemesh.position.copy(body.position)
 		}
+	}
+
+	// Walls sit at 93% of the half-extent, pulled further in on short boxes, where perspective
+	// makes the top of a die resting against a wall poke past the edge of the canvas.
+	wallFactor() {
+		const cameraHeight = this.display.currentHeight / this.display.aspect / Math.tan(10 * Math.PI / 180)
+		const lift = this.baseScale * 2.4
+		return Math.min(0.93, Math.max(0.5, (cameraHeight - lift) / cameraHeight))
 	}
 
 	pixelRatio() {
@@ -502,8 +511,8 @@ class DiceBox {
 				vec.y /= dist;
 
 				let pos = {
-					x: this.display.containerWidth * (vec.x > 0 ? -1 : 1) * 0.9,
-					y: this.display.containerHeight * (vec.y > 0 ? -1 : 1) * 0.9,
+					x: this.display.containerWidth * (vec.x > 0 ? -1 : 1) * (this.wallScale - 0.03),
+					y: this.display.containerHeight * (vec.y > 0 ? -1 : 1) * (this.wallScale - 0.03),
 					z: Math.random() * 200 + 200
 				};
 
