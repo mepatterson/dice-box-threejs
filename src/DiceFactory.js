@@ -8,7 +8,8 @@ import * as CANNON from "cannon-es"
 
 const defaultConfig = {
 	baseScale: 100,
-	bumpMapping: true
+	bumpMapping: true,
+	textureScale: 0.5
 }
 
 class DiceFactory {
@@ -354,25 +355,31 @@ class DiceFactory {
 			ts = this.calc_texture_size(size + size * 2 * margin) * 4;
 		}
 
-		canvas.width = canvas.height = ts;
-		canvasBump.width = canvasBump.height = ts;
+		// Labels are laid out on a ts-sized square; the canvas itself can be smaller. Mipmapping
+		// samples well below the full size at the sizes dice are drawn, and each halving saves
+		// three quarters of the texture memory.
+		const px = Math.max(32, ts * this.textureScale);
+		canvas.width = canvas.height = px;
+		canvasBump.width = canvasBump.height = px;
+		context.scale(px / ts, px / ts);
+		contextBump.scale(px / ts, px / ts);
 
 		// create color
 		context.fillStyle = backcolor;
-		context.fillRect(0, 0, canvas.width, canvas.height);
+		context.fillRect(0, 0, ts, ts);
 
 		contextBump.fillStyle = "#FFFFFF";
-		contextBump.fillRect(0, 0, canvasBump.width, canvasBump.height);
+		contextBump.fillRect(0, 0, ts, ts);
 
 		//create underlying texture
 		if (texture.texture && texture.name != '' && texture.name != 'none') {
 			context.globalCompositeOperation = texture.composite || 'source-over';
-			context.drawImage(texture.texture, 0, 0, canvas.width, canvas.height);
+			context.drawImage(texture.texture, 0, 0, ts, ts);
 			context.globalCompositeOperation = 'source-over';
 
 			if (texture.bump) {
 				contextBump.globalCompositeOperation = 'source-over';
-				contextBump.drawImage(texture.bump, 0, 0, canvas.width, canvas.height);
+				contextBump.drawImage(texture.bump, 0, 0, ts, ts);
 			}
 		} else {
 			context.globalCompositeOperation = 'source-over';
@@ -413,8 +420,8 @@ class DiceFactory {
 
 				if (degrees && degrees != 0) {
 
-					var hw = (canvas.width / 2);
-					var hh = (canvas.height / 2);
+					var hw = (ts / 2);
+					var hh = (ts / 2);
 
 					context.translate(hw, hh);
 					context.rotate(degrees * (Math.PI / 180));
@@ -429,14 +436,14 @@ class DiceFactory {
 			//custom texture face
 			if (text instanceof HTMLImageElement) {
 				isTexture = true;
-				context.drawImage(text, 0,0,text.width,text.height,0,0,canvas.width,canvas.height);
+				context.drawImage(text, 0,0,text.width,text.height,0,0,ts,ts);
 
 			// text-only face
 			} else {
 
 				let fontsize = ts / (1 + 2 * margin);
-				let textstarty = (canvas.height / 2) + 10;
-				let textstartx = (canvas.width / 2);
+				let textstarty = (ts / 2) + 10;
+				let textstartx = (ts / 2);
 
 				if(diceobj.shape == 'd10') {
 					fontsize = fontsize*0.75;
@@ -494,8 +501,8 @@ class DiceFactory {
 			}
 		} else {
 
-			var hw = (canvas.width / 2);
-			var hh = (canvas.height / 2);
+			var hw = (ts / 2);
+			var hh = (ts / 2);
 
 			context.font =  (ts / 128 * 24)+'pt '+diceobj.font;
 			contextBump.font =  (ts / 128 * 24)+'pt '+diceobj.font;
@@ -504,7 +511,7 @@ class DiceFactory {
 			for (let i=0; i<text.length; i++) {
 				//custom texture face
 				if (text[i] instanceof HTMLImageElement) {
-					let scaleTexture = text[i].width / canvas.width;
+					let scaleTexture = text[i].width / ts;
 					context.drawImage(text[i], 0, 0, text[i].width, text[i].height, (100/scaleTexture), (25/scaleTexture), (60/scaleTexture), (60/scaleTexture));
 				} else {
 					// attempt to outline the text with a meaningful color

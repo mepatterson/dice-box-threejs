@@ -122,7 +122,8 @@ class DiceBox {
 
 		this.DiceColors = new DiceColors({assetPath: this.assetPath});
 		this.DiceFactory = new DiceFactory({
-			baseScale: this.baseScale
+			baseScale: this.baseScale,
+			textureScale: this.textureScale
 		});
 		this.DiceFactory.setBumpMapping(true);
 
