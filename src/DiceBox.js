@@ -26,6 +26,12 @@ const defaultConfig = {
 	theme_texture: "",
 	theme_material: "glass",
 	gravity_multiplier: 400,
+	// How lively the dice are: bounce off the table, the walls and each other, friction, how fast
+	// they lose speed in the air, and how long they must stay slow to count as settled (seconds).
+	restitution: { desk: 0.5, wall: 1.0, dice: 0.5 },
+	friction: 0.6,
+	damping: 0.1,
+	settleTime: 0.9,
 	light_intensity: 0.7,
 	baseScale: 100,
 	strength: 1,
@@ -287,9 +293,11 @@ class DiceBox {
 			const desk_body_material = new CANNON.Material();
 			const barrier_body_material = new CANNON.Material();
 
-			this.world.addContactMaterial(new CANNON.ContactMaterial( desk_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
-			this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction: 0.6, restitution: 1.0}));
-			this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
+			const bounce = { ...defaultConfig.restitution, ...this.restitution }
+			const friction = this.friction
+			this.world.addContactMaterial(new CANNON.ContactMaterial( desk_body_material, this.dice_body_material, {mass:0, friction, restitution: bounce.desk}));
+			this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction, restitution: bounce.wall}));
+			this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0, friction, restitution: bounce.dice}));
 
 			const plane = (material, axis, angle) => {
 				const body = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material})
@@ -963,14 +971,14 @@ class DiceBox {
 		dicemesh.result = []
 		dicemesh.castShadow = this.shadows
 		dicemesh.moving = true
-		dicemesh.body = new CANNON.Body({allowSleep: true, sleepSpeedLimit: 75, sleepTimeLimit:0.9, mass: dicemesh.mass, shape: dicemesh.geometry.cannon_shape, material: this.dice_body_material});
+		dicemesh.body = new CANNON.Body({allowSleep: true, sleepSpeedLimit: 75, sleepTimeLimit: this.settleTime, mass: dicemesh.mass, shape: dicemesh.geometry.cannon_shape, material: this.dice_body_material});
 		dicemesh.body.type = CANNON.Body.DYNAMIC;
 		dicemesh.body.position.set(pos.x, pos.y, pos.z);
 		dicemesh.body.quaternion.setFromAxisAngle(new CANNON.Vec3(axis.x, axis.y, axis.z), axis.a * Math.PI * 2);
 		dicemesh.body.angularVelocity.set(angle.x, angle.y, angle.z);
 		dicemesh.body.velocity.set(velocity.x, velocity.y, velocity.z);
-		dicemesh.body.linearDamping = 0.1;
-		dicemesh.body.angularDamping = 0.1;
+		dicemesh.body.linearDamping = this.damping;
+		dicemesh.body.angularDamping = this.damping;
 		dicemesh.body.diceShape = dicemesh.shape;
 		dicemesh.body.addEventListener('collide', this.eventCollide.bind(this));
 		this.world.addBody(dicemesh.body);

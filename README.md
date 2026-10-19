@@ -34,6 +34,10 @@ const defaultConfig = {
 	light_intensity: 0.7,
 	baseScale: 100,
 	strength: 1, // toss strength of dice
+	restitution: { desk: 0.5, wall: 1.0, dice: 0.5 }, // bounce off the table, the walls and other dice
+	friction: 0.6,
+	damping: 0.1, // speed lost in the air; higher settles sooner
+	settleTime: 0.9, // seconds a die must stay slow before it counts as settled
 	maxPixelRatio: 2, // caps devicePixelRatio; 3x phones render at 2x
 	rollingPixelRatio: null, // e.g. 1 to render moving dice at 1x and the settled dice at full ratio
 	textureScale: 0.5, // label texture resolution relative to the original 512px faces (metal always uses full resolution)
