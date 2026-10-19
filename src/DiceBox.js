@@ -1144,14 +1144,52 @@ class DiceBox {
 	}
 
 	// highlightResult: true | { glow: true | number (emissive intensity), pop: true }
-	highlightDice(meshes) {
+	highlightOptions() {
 		const option = this.highlightResult
-		if (!option) return
+		if (!option) return { glow: 0, pop: false }
 		const glow = option === true || option.glow === undefined ? true : option.glow
 		const pop = option === true || option.pop === undefined ? true : option.pop
+		return { glow: glow === true ? 1 : Number(glow) || 0, pop: Boolean(pop) }
+	}
+
+	// Dropped dice are struck through; the rest get the result highlight.
+	highlightDice(meshes) {
 		meshes = meshes.filter(mesh => mesh && mesh.parent)
-		if (glow) meshes.forEach(mesh => this.DiceFactory.glowResult(mesh, glow === true ? 1 : glow))
-		if (pop) this.popDice(meshes)
+		meshes.forEach(mesh => { if (mesh.mark === "dropped") this.DiceFactory.dropResult(mesh) })
+		const { glow, pop } = this.highlightOptions()
+		const kept = meshes.filter(mesh => mesh.mark !== "dropped")
+		if (glow) kept.forEach(mesh => this.DiceFactory.glowResult(mesh, glow))
+		if (pop) this.popDice(kept)
+	}
+
+	// marks: [{ index, state: "kept" | "dropped" | null }], where index is the die's id in the
+	// results (its place in throw order across roll() and add() calls). A dropped die shows its number
+	// struck through and is dimmed, and never gets the result highlight; a kept or unmarked die does.
+	// Dice still rolling are drawn marked when they settle. Results and faces never change.
+	markDice(marks = []) {
+		const settled = []
+		for (const { index, state } of marks) {
+			const mesh = this.diceList[index]
+			if (!mesh) continue
+			mesh.mark = state === "kept" || state === "dropped" ? state : null
+			if (mesh.parent && mesh.body && mesh.body.type === CANNON.Body.KINEMATIC && !mesh.rerolling) settled.push(mesh)
+		}
+		if (!settled.length) return
+		const { glow } = this.highlightOptions()
+		for (const mesh of settled) {
+			if (mesh.mark === "dropped") {
+				if (this.popping.includes(mesh)) {
+					this.scaleDice([mesh], 1)
+					this.popping = this.popping.filter(m => m !== mesh)
+				}
+				this.DiceFactory.dropResult(mesh)
+			} else if (glow) {
+				this.DiceFactory.glowResult(mesh, glow)
+			} else {
+				this.DiceFactory.unglow(mesh)
+			}
+		}
+		if (!this.rolling && !this.popping.length) this.renderer.render(this.scene, this.camera)
 	}
 
 	// A brief scale-up and settle on the render loop. Bodies are kinematic by now and only the
@@ -1166,7 +1204,7 @@ class DiceBox {
 			const t = Math.min(1, (now - start) / POP_MS)
 			const rise = 0.3
 			const k = t < rise ? 1 - (1 - t / rise) ** 3 : 1 - smoothstep(0, 1, (t - rise) / (1 - rise))
-			this.scaleDice(meshes, 1 + POP_SCALE * k)
+			this.scaleDice(this.popping, 1 + POP_SCALE * k)
 			this.renderer.render(this.scene, this.camera)
 			if (t < 1) requestAnimationFrame(frame)
 			else this.popping = []
@@ -1353,6 +1391,7 @@ class DiceBox {
 			diceIdArray.forEach(dieId => {
 				const dicemesh = this.diceList[dieId]
 				this.DiceFactory.unglow(dicemesh)
+				dicemesh.mark = null
 				dicemesh.rerolls += 1;
 				dicemesh.rerolling = true;
 				dicemesh.body.wakeUp();

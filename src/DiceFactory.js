@@ -87,6 +87,9 @@ function glassShader(shader, refraction) {
 			glassSpecular *= 1.0 - 0.8 * glassPaint;
 			float glassAlpha = glassCover + ( 1.0 - glassCover ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
 			gl_FragColor = vec4( ( glassColor * glassCover + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
+			#ifdef DICE_DIM
+				gl_FragColor.rgb *= 0.6;
+			#endif
 		`);
 }
 
@@ -151,6 +154,29 @@ function woodGrain(size = 256) {
 	return canvas;
 }
 
+// Dims and desaturates a dropped die.
+function dimShader(shader) {
+	shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', `
+		diffuseColor.rgb = mix( vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) ), diffuseColor.rgb, 0.4 ) * 0.55;
+		#include <normal_fragment_begin>`);
+}
+
+// A soft round glow, white in the middle and fading to nothing at the rim.
+function haloTexture() {
+	const canvas = document.createElement('canvas');
+	canvas.width = canvas.height = 64;
+	const context = canvas.getContext('2d');
+	const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+	gradient.addColorStop(0, 'rgba(255,255,255,0.9)');
+	gradient.addColorStop(0.35, 'rgba(255,255,255,0.45)');
+	gradient.addColorStop(1, 'rgba(255,255,255,0)');
+	context.fillStyle = gradient;
+	context.fillRect(0, 0, 64, 64);
+	const texture = new THREE.CanvasTexture(canvas);
+	texture.colorSpace = THREE.SRGBColorSpace;
+	return texture;
+}
+
 class DiceFactory {
 	static dice = {}
 	constructor(options) {
@@ -175,6 +201,9 @@ class DiceFactory {
 		this.refraction = { value: new THREE.Vector3(1.5, 0, 0) };
 		this.maxAnisotropy = 1;
 		this.glow_cache = new Map();
+		this.variant_cache = new Map();
+		this.halo_cache = new Map();
+		this.halo_texture = null;
 
 		this.material_options = {
 			specular: 0x777777,
@@ -214,14 +243,23 @@ class DiceFactory {
 			if (mat.emissiveMap) mat.emissiveMap.dispose();
 			mat.dispose();
 		});
+		this.variant_cache.forEach(mat => {
+			(mat.ownTextures || []).forEach(texture => texture && texture.dispose());
+			mat.dispose();
+		});
+		this.halo_cache.forEach(mat => mat.dispose());
+		if (this.halo_texture) this.halo_texture.dispose();
 		this.geometries = {};
 		this.materials_cache = {};
 		this.mesh_materials_cache = new Map();
 		this.glow_cache = new Map();
+		this.variant_cache = new Map();
+		this.halo_cache = new Map();
+		this.halo_texture = null;
 	}
 
 	cachedMaterials() {
-		return [...this.mesh_materials_cache.values(), ...this.glow_cache.values()];
+		return [...this.mesh_materials_cache.values(), ...this.glow_cache.values(), ...this.variant_cache.values()];
 	}
 
 	// Points every cached metal and glass material at a new environment.
@@ -274,10 +312,11 @@ class DiceFactory {
 
 	// Makes the result on a settled die glow: the label material on the face that landed up (on a
 	// d4, the three faces showing the result at their top corner) is swapped for a cached variant
-	// that emits a soft halo in the number colour. Only the drawn materials change; the face map
-	// and so the reported result stay as they were.
+	// that emits a soft halo in the number colour, and a small additive glow sprite sits just above
+	// the number. Only what is drawn changes; the face map and so the reported result stay as they were.
 	glowResult(mesh, intensity = 1) {
-		if (!mesh.baseMaterial) mesh.baseMaterial = mesh.material;
+		this.unglow(mesh);
+		mesh.baseMaterial = mesh.material;
 		const materials = mesh.baseMaterial.slice();
 		const top = this.topFace(mesh).materialIndex;
 		if (mesh.shape == 'd4') {
@@ -289,12 +328,153 @@ class DiceFactory {
 			materials[top] = this.glowMaterial(materials[top], null, intensity);
 		}
 		mesh.material = materials;
+		const info = mesh.baseMaterial[mesh.shape == 'd4' ? 2 : top].diceLabel;
+		if (info) this.addHalo(mesh, this.glowColor(info.forecolor).color, intensity);
+	}
+
+	// A dropped die: every face dimmed and desaturated and the number that landed up struck through.
+	dropResult(mesh) {
+		this.unglow(mesh);
+		mesh.baseMaterial = mesh.material;
+		const materials = mesh.baseMaterial.map(mat => this.dimMaterial(mat));
+		const top = this.topFace(mesh).materialIndex;
+		if (mesh.shape == 'd4') {
+			const text = String(mesh.getFaceValue().value);
+			mesh.baseMaterial.forEach((mat, i) => {
+				if (i > 1 && i != top) materials[i] = this.strikeMaterial(mat, text);
+			});
+		} else {
+			materials[top] = this.strikeMaterial(mesh.baseMaterial[top], null);
+		}
+		mesh.material = materials;
+		const interior = mesh.children.find(child => child.isMesh);
+		if (interior) {
+			interior.baseMaterial = interior.material;
+			interior.material = this.dimMaterial(interior.material);
+		}
 	}
 
 	unglow(mesh) {
+		if (mesh.halo) {
+			mesh.remove(mesh.halo);
+			mesh.halo = null;
+		}
+		const interior = mesh.children.find(child => child.isMesh && child.baseMaterial);
+		if (interior) {
+			interior.material = interior.baseMaterial;
+			interior.baseMaterial = null;
+		}
 		if (!mesh.baseMaterial) return;
 		mesh.material = mesh.baseMaterial;
 		mesh.baseMaterial = null;
+	}
+
+	// A dark number gets a light halo instead of glowing in its own colour.
+	glowColor(forecolor) {
+		const hsl = new THREE.Color(forecolor).getHSL({}, THREE.SRGBColorSpace);
+		const dark = hsl.l < 0.45;
+		return { dark, color: dark ? `hsl(${Math.round(hsl.h * 360)}, ${Math.round(Math.min(hsl.s, 0.7) * 100)}%, 80%)` : forecolor };
+	}
+
+	// The halo sits just above the up face (on a d4, over the top corner) as a child of the mesh, so
+	// it pops with the die and goes when the die does.
+	addHalo(mesh, color, intensity) {
+		if (!this.halo_texture) this.halo_texture = haloTexture();
+		const key = `${color}|${intensity}`;
+		let mat = this.halo_cache.get(key);
+		if (!mat) {
+			mat = new THREE.SpriteMaterial({ map: this.halo_texture, color: new THREE.Color(color), blending: THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false, opacity: Math.min(1, 0.55 * intensity) });
+			this.halo_cache.set(key, mat);
+		}
+		const radius = mesh.geometry.boundingSphere.radius;
+		const position = mesh.geometry.getAttribute('position');
+		const quaternion = mesh.body ? new THREE.Quaternion().copy(mesh.body.quaternion) : mesh.quaternion;
+		const point = new THREE.Vector3();
+		let size = radius * 1.25;
+		if (mesh.shape == 'd4') {
+			const up = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion.clone().invert());
+			const v = new THREE.Vector3();
+			let best = -Infinity;
+			for (let i = 0; i < position.count; i++) {
+				v.fromBufferAttribute(position, i);
+				if (v.dot(up) > best) {
+					best = v.dot(up);
+					point.copy(v);
+				}
+			}
+			point.multiplyScalar(0.8);
+			size = radius * 0.8;
+		} else {
+			const group = this.topFace(mesh);
+			const normal = new THREE.Vector3().fromBufferAttribute(mesh.geometry.getAttribute('normal'), group.start);
+			point.fromBufferAttribute(position, group.start);
+			point.copy(normal).multiplyScalar(normal.dot(point) + radius * 0.05);
+		}
+		const halo = new THREE.Sprite(mat);
+		halo.position.copy(point);
+		halo.scale.setScalar(size);
+		halo.renderOrder = 1;
+		mesh.add(halo);
+		mesh.halo = halo;
+	}
+
+	// Variants are drawn with the colorset the label was made with, even if it has changed since.
+	drawLabel(info, forecolor, variant) {
+		const saved = [this.dice_material, this.body_opacity];
+		this.dice_material = info.material;
+		this.body_opacity = info.opacity;
+		try {
+			return variant.strike
+				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant)
+				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
+		} finally {
+			[this.dice_material, this.body_opacity] = saved;
+		}
+	}
+
+	dimMaterial(base) {
+		const key = `dim|${base.uuid}`;
+		let mat = this.variant_cache.get(key);
+		if (mat) return mat;
+		mat = this.cloneMaterial(base);
+		const compile = base.onBeforeCompile;
+		mat.onBeforeCompile = (shader, renderer) => {
+			compile.call(mat, shader, renderer);
+			dimShader(shader);
+		};
+		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|dim`;
+		if (mat.isGlass) mat.defines.DICE_DIM = '';
+		this.variant_cache.set(key, mat);
+		return mat;
+	}
+
+	strikeMaterial(base, text) {
+		const info = base && base.diceLabel;
+		if (!info) return this.dimMaterial(base);
+		if (text !== null && !info.labels[info.index].includes(text)) return this.dimMaterial(base);
+		const key = `strike|${base.uuid}|${text}`;
+		let mat = this.variant_cache.get(key);
+		if (mat) return mat;
+		const dim = this.dimMaterial(base);
+		mat = this.cloneMaterial(dim);
+		mat.onBeforeCompile = dim.onBeforeCompile;
+		mat.customProgramCacheKey = dim.customProgramCacheKey;
+		const { composite, bump } = this.drawLabel(info, info.forecolor, { text, strike: true });
+		mat.map = composite;
+		if (base.metalnessMap) mat.metalnessMap = bump;
+		if (base.bumpMap && !base.bumpMap.isNormalImage) mat.bumpMap = bump;
+		mat.ownTextures = [composite, bump];
+		this.variant_cache.set(key, mat);
+		return mat;
+	}
+
+	cloneMaterial(base) {
+		const mat = base.clone();
+		mat.defines = { ...base.defines };
+		mat.onBeforeCompile = base.onBeforeCompile;
+		mat.isGlass = base.isGlass;
+		mat.envBase = base.envBase;
+		return mat;
 	}
 
 	glowMaterial(base, text, intensity) {
@@ -304,18 +484,11 @@ class DiceFactory {
 		const key = `${base.uuid}|${text}|${intensity}`;
 		let mat = this.glow_cache.get(key);
 		if (mat) return mat;
-		mat = base.clone();
-		mat.defines = { ...base.defines };
-		mat.onBeforeCompile = base.onBeforeCompile;
-		mat.isGlass = base.isGlass;
-		mat.envBase = base.envBase;
+		mat = this.cloneMaterial(base);
 		mat.emissive = new THREE.Color(0xffffff);
 		mat.emissiveIntensity = intensity;
-		// a dark number gets a light halo behind it instead of glowing itself
-		const hsl = new THREE.Color(info.forecolor).getHSL({}, THREE.SRGBColorSpace);
-		const dark = hsl.l < 0.45;
-		const color = dark ? `hsl(${Math.round(hsl.h * 360)}, ${Math.round(Math.min(hsl.s, 0.7) * 100)}%, 80%)` : info.forecolor;
-		mat.emissiveMap = this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, color, 'none', '#000000', false, { text, knockout: dark }).composite;
+		const { dark, color } = this.glowColor(info.forecolor);
+		mat.emissiveMap = this.drawLabel(info, color, { text, knockout: dark }).composite;
 		this.glow_cache.set(key, mat);
 		return mat;
 	}
@@ -496,7 +669,7 @@ class DiceFactory {
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
-				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand };
+				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity };
 				if (isMetal(this.dice_material)) {
 					mat.onBeforeCompile = metalShader;
 					mat.metalnessMap = canvasTextures.bump;
@@ -617,8 +790,9 @@ class DiceFactory {
 	}
 
 	// With glow ({text}: only that number on a d4, or null for the face's label) it draws just the
-	// numbers, haloed in their colour on black, for use as an emissive map.
-	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache, glow = null) {
+	// numbers, haloed in their colour on black, for use as an emissive map. With strike (the same
+	// {text}) the label is drawn as usual with that number crossed out.
+	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache, glow = null, strike = null) {
 		if (labels[index] === undefined) return null;
 		if (glow) texture = { name: 'none' };
 
@@ -810,6 +984,7 @@ class DiceFactory {
 						context.fillText('  .', textstartx, textstarty);
 						contextBump.fillText('  .', textstartx, textstarty);
 					}
+					if (strike && textline) this.strikeThrough([context, contextBump], textline, textstartx, textstarty - fontsize * 0.1, fontsize, forecolor, outlined ? outlinecolor : null);
 					textstarty += (lineHeight * 1.5);
 				}
 			}
@@ -846,6 +1021,7 @@ class DiceFactory {
 
 					contextBump.fillStyle = "#000000";
 					contextBump.fillText(text[i], hw, hh - ts * 0.3);
+					if (strike && strike.text == text[i]) this.strikeThrough([context, contextBump], text[i], hw, hh - ts * 0.3 - ts * 0.02, ts / 128 * 24, forecolor, outlined ? outlinecolor : null);
 				}
 
 				//rotate 1/3 for next label
@@ -883,6 +1059,29 @@ class DiceFactory {
 		}
 
 		return {composite:compositetexture,bump:bumpMap};
+	}
+
+	// A bold slanted bar across a number, in its colour over its outline; black on the bump canvas,
+	// which also makes it matte paint on metal.
+	strikeThrough([context, contextBump], text, x, y, fontsize, color, outline) {
+		const half = context.measureText(text).width / 2 + fontsize * 0.2;
+		const rise = fontsize * 0.22;
+		const width = fontsize * 0.2;
+		const bar = (ctx, style, lineWidth) => {
+			ctx.save();
+			ctx.shadowBlur = 0;
+			ctx.lineCap = 'round';
+			ctx.strokeStyle = style;
+			ctx.lineWidth = lineWidth;
+			ctx.beginPath();
+			ctx.moveTo(x - half, y + rise);
+			ctx.lineTo(x + half, y - rise);
+			ctx.stroke();
+			ctx.restore();
+		};
+		if (outline) bar(context, outline, width + 10);
+		bar(context, color, width);
+		bar(contextBump, '#000000', width + (outline ? 10 : 0));
 	}
 
 	// Each face gets the shared grain turned and shifted by its index, so neighbouring faces differ.
