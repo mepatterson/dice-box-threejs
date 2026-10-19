@@ -41,6 +41,7 @@ const defaultConfig = {
 	highlightResult: false,
 	throwFrom: "any",
 	preloadDice: null,
+	themeCache: 8,
 	onRollComplete: () => {},
 	onRerollComplete: () => {},
 	onAddDiceComplete: () => {},
@@ -63,6 +64,21 @@ const POP_MS = 350
 const POP_SCALE = 0.12
 const SWEEP_MS = 800
 const TWINKLE_MS = 1100
+// A throw's playback starts this many physics steps after it is simulated, so the simulation is
+// normally done before its first frame is due.
+const LEAD_STEPS = 2
+
+const materialOf = colordata => {
+	const material = colordata?.texture?.material || 'none'
+	return material == 'plastic' ? 'none' : material
+}
+
+// The same colorset always gives the same theme, whatever it is called.
+function themeKey(colorset, box) {
+	if (typeof colorset === "string") return `stock|${colorset}|${box.theme_texture}|${box.theme_material}`
+	const { name, ...rest } = colorset
+	return JSON.stringify(Object.fromEntries(Object.keys(rest).sort().map(key => [key, rest[key]])))
+}
 
 const smoothstep = (a, b, x) => {
 	const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
@@ -78,9 +94,7 @@ class DiceBox {
 		this.dimensions = new THREE.Vector2(this.container.clientWidth, this.container.clientHeight)
 		this.adaptive_timestep = false;
 		this.last_time = 0;
-		this.running = false;
 		this.rolling = false;
-		this.threadid;
 
 		this.display = {
 			currentWidth: null,
@@ -106,7 +120,6 @@ class DiceBox {
 		this.lastSoundType = '';
 		this.lastSoundStep = 0;
 		this.lastSound = 0;
-		this.iteration;
 		this.renderer;
 		this.barrier;
 		this.camera;
@@ -123,8 +136,16 @@ class DiceBox {
 		this.pendingWorldBox = false
 		this.envTarget = null
 		this.envReady = null
-		this.popToken = 0
-		this.popping = []
+		this.throws = []
+		this.pops = []
+		this.sweepStart = null
+		this.twinkleStart = null
+		this.frameRequested = false
+		this.recording = null
+		this.resolvedThemes = new Map()
+		this.themePromises = new Map()
+		this.boxResolved = null
+		this.boxTheme = null
 
 		//public variables
 		// this.framerate = (1/60);
@@ -158,7 +179,8 @@ class DiceBox {
 		this.DiceFactory = new DiceFactory({
 			baseScale: this.baseScale,
 			textureScale: this.textureScale,
-			glass_opacity: this.glass_opacity
+			glass_opacity: this.glass_opacity,
+			themeCache: this.themeCache
 		});
 		this.DiceFactory.setBumpMapping(true);
 		this.DiceFactory.setRefraction(this.glass_refraction);
@@ -229,21 +251,34 @@ class DiceBox {
 
 	// Builds the textures and materials for these die types and compiles their shaders ahead of
 	// time (in parallel where the browser supports it), so the first roll starts without a stall.
-	async preload(types = ["d6"]) {
-		const meshes = []
-		for (const type of types) {
-			const mesh = this.DiceFactory.create(type, this.colorData)
-			if (!mesh) continue
-			mesh.castShadow = this.shadows
-			mesh.position.set(0, 0, -1000)
-			meshes.push(mesh)
-			this.scene.add(mesh)
-		}
+	preload(types = ["d6"]) {
+		return this.preloadTheme(null, types)
+	}
+
+	// The same for a colorset that later throws will use (null for the box's own): its images and
+	// font load, its label textures are drawn and uploaded and any new shaders compile, so its first
+	// throw starts as fast as any other, for example when a player joins.
+	async preloadTheme(colorset, types = ["d20"]) {
+		const resolved = colorset ? await this.resolveTheme(colorset) : this.boxResolved
+		if (this.disposed) return
+		const theme = this.DiceFactory.useTheme(resolved.key, resolved.colordata, resolved.fontReady)
+		theme.pins++
+		const group = new THREE.Group()
 		try {
-			if (this.renderer.compileAsync) await this.renderer.compileAsync(this.scene, this.camera)
-			else this.renderer.compile(this.scene, this.camera)
+			this.trimThemes()
+			for (const type of types) {
+				const mesh = this.DiceFactory.create(type)
+				if (!mesh) continue
+				mesh.castShadow = this.shadows
+				group.add(mesh)
+				for (const mat of [...mesh.material, ...mesh.children.map(child => child.material)]) {
+					for (const texture of [mat.map, mat.bumpMap, mat.metalnessMap, mat.glintMap]) if (texture) this.renderer.initTexture(texture)
+				}
+			}
+			if (this.renderer.extensions.has("KHR_parallel_shader_compile")) await this.renderer.compileAsync(group, this.camera, this.scene)
+			else this.renderer.compile(group, this.camera, this.scene)
 		} finally {
-			meshes.forEach(mesh => this.scene.remove(mesh))
+			theme.pins--
 		}
 	}
 
@@ -324,21 +359,50 @@ class DiceBox {
 	}
 
 	async loadTheme(themeConfig){
-		let colorData
-		if(this.theme_customColorset){
-			colorData = await this.DiceColors.makeColorSet(this.theme_customColorset)
-		} else {
-			colorData = await this.DiceColors.getColorSet(themeConfig)
-		}
-		// labels are drawn once and cached, so the number font has to be ready before the first die
-		const fontReady = await loadFont(fontOf(colorData), this.fontTimeout)
-		this.DiceFactory.applyColorSet(colorData, fontReady)
-		this.colorData = colorData
+		const resolved = await this.resolveTheme(this.theme_customColorset || themeConfig.colorset)
+		this.boxResolved = resolved
+		this.boxTheme = this.DiceFactory.useTheme(resolved.key, resolved.colordata, resolved.fontReady)
+		this.colorData = resolved.colordata
 
 		const material = this.DiceFactory.dice_material
-		if (MATERIALTYPES[material]?.envMapIntensity && this.renderer) await this.loadEnvironment()
 		// light passes through glass, so its shadows are lighter
 		if (this.desk) this.desk.material.opacity = SHADOW_OPACITY * (material == 'glass' ? 0.4 + 0.6 * this.DiceFactory.body_opacity : 1)
+		this.trimThemes()
+	}
+
+	// A colorset (a stock colorset name, or a custom colorset) made ready to draw, once: its images
+	// loaded and its font ready (labels are drawn once and cached, so the number font has to be ready
+	// before the first die), and the environment if its material reflects it.
+	resolveTheme(colorset) {
+		const key = themeKey(colorset, this)
+		let pending = this.themePromises.get(key)
+		if (!pending) {
+			pending = (async () => {
+				const colordata = typeof colorset === "string"
+					? await this.DiceColors.getColorSet({ colorset, texture: this.theme_texture, material: this.theme_material })
+					: await this.DiceColors.makeColorSet({ ...colorset, name: key })
+				const fontReady = await loadFont(fontOf(colordata), this.fontTimeout)
+				if (MATERIALTYPES[materialOf(colordata)]?.envMapIntensity && this.renderer) await this.loadEnvironment()
+				const resolved = { key, colordata, fontReady }
+				if (this.themePromises.get(key) === pending) this.resolvedThemes.set(key, resolved)
+				return resolved
+			})()
+			this.themePromises.set(key, pending)
+			pending.catch(() => this.themePromises.delete(key))
+		}
+		return pending
+	}
+
+	// Frees the least recently used themes beyond themeCache that no die on the table (or rolling)
+	// uses; the box's own theme stays.
+	trimThemes() {
+		const inUse = new Set(this.diceList.filter(mesh => mesh.parent).map(mesh => mesh.diceTheme))
+		if (this.boxTheme) inUse.add(this.boxTheme)
+		for (const key of this.DiceFactory.trimThemes(inUse)) {
+			this.resolvedThemes.delete(key)
+			this.themePromises.delete(key)
+			delete this.DiceColors.colorsets[key]
+		}
 	}
 
 	// Loads the reflection environment the first time a metal or glass colorset needs it.
@@ -539,6 +603,10 @@ class DiceBox {
 			this.theme_material = options.theme_material
 		}
 		if ("highlightResult" in options) this.highlightResult = options.highlightResult
+		if ("themeCache" in options) {
+			this.themeCache = this.DiceFactory.themeCache = options.themeCache
+			this.trimThemes()
+		}
 		if ("throwFrom" in options) this.throwFrom = options.throwFrom
 		if ("glass_refraction" in options) {
 			this.glass_refraction = options.glass_refraction
@@ -878,34 +946,23 @@ class DiceBox {
 
 		// Every numbered face moves num places round, and the label set rotated by the same
 		// amount keeps the corner numbers consistent.
-		const base = this.DiceFactory.createMaterials(diceobj, 0, 0, true, num);
+		const base = this.DiceFactory.labelSet(dicemesh, num);
 		const faceMap = base.map((m, i) => i < 2 ? i : ((i - 2 + num) % 4) + 2);
 		dicemesh.material = faceMap.map(i => base[i]);
 		dicemesh.faceMap = faceMap;
 		dicemesh.result = [];
 	}
 
-	//spawns one dicemesh object from a single vectordata object
-	spawnDice(vectordata, reset = false) {
-		const {pos, axis, angle, velocity} = vectordata
-		let dicemesh
-		
-		if(!reset) {
-			dicemesh = this.DiceFactory.create(vectordata.type, this.colorData);
-			if(!dicemesh) return;
-			dicemesh.notation = vectordata;
-			dicemesh.result = [];
-			dicemesh.stopped = 0;
-			dicemesh.castShadow = this.shadows;
-			this.scene.add(dicemesh);
-			this.diceList.push(dicemesh);
-		} else {
-			dicemesh = reset
-			// dicemesh.result = [];
-			dicemesh.stopped = 0;
-			this.world.removeBody(dicemesh.body);
-		}
-
+	// Spawns one die for a vectordata object, in a theme, at its start position.
+	spawnDice(vectordata, theme) {
+		this.DiceFactory.useTheme(theme.key, theme.colordata, theme.fontReady)
+		const dicemesh = this.DiceFactory.create(vectordata.type)
+		if (!dicemesh) return null
+		const { pos, axis, angle, velocity } = vectordata
+		dicemesh.notation = vectordata
+		dicemesh.result = []
+		dicemesh.castShadow = this.shadows
+		dicemesh.moving = true
 		dicemesh.body = new CANNON.Body({allowSleep: true, sleepSpeedLimit: 75, sleepTimeLimit:0.9, mass: dicemesh.mass, shape: dicemesh.geometry.cannon_shape, material: this.dice_body_material});
 		dicemesh.body.type = CANNON.Body.DYNAMIC;
 		dicemesh.body.position.set(pos.x, pos.y, pos.z);
@@ -915,251 +972,201 @@ class DiceBox {
 		dicemesh.body.linearDamping = 0.1;
 		dicemesh.body.angularDamping = 0.1;
 		dicemesh.body.diceShape = dicemesh.shape;
-		dicemesh.body.sleepState = 0;
-
 		dicemesh.body.addEventListener('collide', this.eventCollide.bind(this));
-
 		this.world.addBody(dicemesh.body);
+		dicemesh.position.copy(dicemesh.body.position);
+		dicemesh.quaternion.copy(dicemesh.body.quaternion);
+		this.scene.add(dicemesh);
+		this.diceList.push(dicemesh);
+		return dicemesh
 	}
 
+	// Sounds are recorded while a throw is simulated and played when its playback gets there.
 	eventCollide({body, target}) {
+		if (!this.sounds || !body || !this.recording) return;
+		const dice = body.mass > 0
+		this.recording.push({ step: this.recordStep, dice, coin: body.diceShape === "d2", speed: (dice ? body : target).velocity.length() })
+	}
 
-		// collision events happen simultaneously for both colliding bodies
-		// all this sanity checking helps limits sounds being played
-
-		// don't play sounds if we're simulating
-		if (this.animstate == 'simulate') return;
-		if (!this.sounds || !body) return;
-
+	playSound({ step, dice, coin, speed }) {
 		// let volume = parseInt(window.DiceFavorites.settings.volume.value) || 0;
 		if (this.volume <= 0) return;
 
 		let now = Date.now();
-		let currentSoundType = (body.mass > 0) ? 'dice' : 'table';
+		let currentSoundType = dice ? 'dice' : 'table';
 
 		// the idea here is that a dice clack should never be skipped in favor of a table sound
 		// if ((don't play sounds if we played one this world step, or there hasn't been enough delay) AND 'this sound IS NOT a dice clack') then 'skip it'
-		if ((this.lastSoundStep == body.world.stepnumber || this.lastSound > now) && currentSoundType != 'dice') return;
+		if ((this.lastSoundStep == step || this.lastSound > now) && currentSoundType != 'dice') return;
 
 		// also skip if it's too early and both last sound and this sound are the same
-		if ((this.lastSoundStep == body.world.stepnumber || this.lastSound > now) && currentSoundType == 'dice' && this.lastSoundType == 'dice') return;
+		if ((this.lastSoundStep == step || this.lastSound > now) && currentSoundType == 'dice' && this.lastSoundType == 'dice') return;
 
-		if (body.mass > 0) { // dice to dice collision
+		// also don't bother playing at low speeds
+		if (speed < 250) return;
 
-			let speed = body.velocity.length();
-			// also don't bother playing at low speeds
-			if (speed < 250) return;
-
-			let sound;
-
-			if(body.diceShape === "d2") {
-				sound = this.sounds_dice['coin'][Math.floor(Math.random() * this.sounds_dice['coin'].length)];
-			}
-			else {
-				sound = this.sounds_dice[this.sound_dieMaterial][Math.floor(Math.random() * this.sounds_dice[this.sound_dieMaterial].length)];
-			}
-			if(sound){
-				sound.volume = Math.min(speed / 8000, this.volume/100)
-				sound.play().catch(error => {});
-			}
-			// if (isPlaying !== undefined) {
-			// 	isPlaying.then(() => {
-			// 		// Autoplay started!
-			// 	}).catch(error => {
-			// 		// Autoplay was prevented.
-			// 		// console.warn('Sounds muted by autoplay')
-			// 	});
-			// }
-			this.lastSoundType = 'dice';
-
-
-		} else { // dice to table collision
-			let speed = target.velocity.length();
-			// also don't bother playing at low speeds
-			if (speed < 250) return;
-
-			let surface = this.surface;
-
-			let soundlist = this.sounds_table[surface];
-			let sound = soundlist[Math.floor(Math.random() * soundlist.length)];
-			if(sound){
-				sound.volume = Math.min(speed / 8000, this.volume/100)
-				sound.play().catch(error => {});
-			}
-			// if (isPlaying !== undefined) {
-			// 	isPlaying.then(() => {
-			// 		// Autoplay started!
-			// 	}).catch(error => {
-			// 		// Autoplay was prevented.
-			// 		// console.warn('Sounds muted by autoplay')
-			// 	});
-			// }
-			this.lastSoundType = 'table';
+		let sound;
+		if (dice) {
+			const clips = coin ? this.sounds_dice['coin'] : this.sounds_dice[this.sound_dieMaterial];
+			sound = clips[Math.floor(Math.random() * clips.length)];
+		} else {
+			const soundlist = this.sounds_table[this.surface];
+			sound = soundlist[Math.floor(Math.random() * soundlist.length)];
 		}
-
-		this.lastSoundStep = body.world.stepnumber;
+		if(sound){
+			sound.volume = Math.min(speed / 8000, this.volume/100)
+			sound.play().catch(error => {});
+		}
+		this.lastSoundType = currentSoundType;
+		this.lastSoundStep = step;
 		this.lastSound = now + this.soundDelay;
 	}
 
-	checkForRethrow(dicemesh) {
-		// all dice in a set/dice group will have the same function and arguments due to sorting beforehand
-		// this means the list passed in is the set of dice that need to be affected by this function
-		let diceFunc = (dicemesh.notation.func) ? dicemesh.notation.func.toLowerCase() : '';
-		// let funcdata = this.DiceFunctions.rethrowFunctions[diceFunc];
-		let funcdata
-
-		let reroll = false;
-			
-		if (diceFunc != '' && funcdata && funcdata.method) {
-			diceFunc = dicemesh.notation.func.toLowerCase();
-			let diceFuncArgs = dicemesh.notation.args || '';
-			reroll = funcdata.method(dicemesh, diceFuncArgs);
-		}
-
-		return reroll;
+	// The fixed physics step the playback clock is on; every throw starts on one of these.
+	clockStep() {
+		return Math.floor(performance.now() / (this.framerate * 1000))
 	}
 
-	throwFinished() {
-		const forcedFinish = this.iteration > this.iterationLimit
-
-		// cycle through diceList and if any dice are still awake then return false
-		for (let i=0, len=this.diceList.length; i < len; ++i) {
-			const dicemesh = this.diceList[i];
-			const sleepState = CANNON.Body.SLEEPING
-
-			if (dicemesh.body.sleepState < sleepState && !forcedFinish) {
-				return false;
-			}
-
-			if (dicemesh.body.sleepState == sleepState || forcedFinish) {
-				if(dicemesh.body.type === CANNON.Body.KINEMATIC){
-					continue
-				}
-
-				let rethrow = false;
-
-				//check for forced roll
-				if (dicemesh.result.length == 0) {
-					dicemesh.storeRolledValue(dicemesh.resultReason);
-					rethrow = this.checkForRethrow(dicemesh);
-				} else if (dicemesh.result.length > 0 && dicemesh.rerolling) {
-					dicemesh.rerolling = false;
-					dicemesh.storeRolledValue('reroll');
-					rethrow = this.checkForRethrow(dicemesh);
-				}
-
-				if (rethrow) {
-					dicemesh.rerolls += 1;
-					dicemesh.rerolling = true;
-					dicemesh.body.wakeUp();
-					dicemesh.body.type = CANNON.Body.DYNAMIC;
-					dicemesh.body.angularVelocity = new CANNON.Vec3(25, 25, 25);
-					dicemesh.body.velocity = new CANNON.Vec3(0, 0, 3000);
-					return false;
-				}
-
-				dicemesh.rerolling = false;
-				dicemesh.body.type = CANNON.Body.KINEMATIC;
-				
-			}
+	// Steps the world until the dice of a new throw (fresh, or woken for a reroll) are asleep or
+	// iterationLimit steps pass, reading each face as its die falls asleep and freezing it there
+	// (kinematic, so later dice bounce off it). The dice of throws still playing back follow their
+	// own recorded paths step by step as moving kinematic bodies: the new dice bounce off them, and
+	// they never change, so their results stay what they were. Returns the poses of the new dice
+	// at every step and the collisions that make sounds.
+	simulate(dice, startStep) {
+		const dt = this.framerate
+		const movers = this.throws.flatMap(t => t.dice.map((mesh, j) => ({ mesh, t, j, frame: startStep - t.startStep })))
+		const n = dice.length
+		const frames = []
+		const record = () => {
+			const frame = new Float32Array(n * 7)
+			dice.forEach(({ body: { position: p, quaternion: q } }, j) => frame.set([p.x, p.y, p.z, q.x, q.y, q.z, q.w], j * 7))
+			frames.push(frame)
 		}
-		return true;
+		this.recording = []
+		this.recordStep = 0
+		record()
+		const done = new Array(n).fill(false)
+		let left = n
+		try {
+			for (let step = 0; ; step++) {
+				for (let j = 0; j < n; j++) {
+					const mesh = dice[j]
+					if (done[j] || (mesh.body.sleepState !== CANNON.Body.SLEEPING && step <= this.iterationLimit)) continue
+					done[j] = true
+					left--
+					mesh.storeRolledValue(mesh.rerolling ? 'reroll' : mesh.resultReason)
+					mesh.rerolling = false
+					mesh.body.type = CANNON.Body.KINEMATIC
+					mesh.body.velocity.setZero()
+					mesh.body.angularVelocity.setZero()
+				}
+				if (!left) break
+				for (const mover of movers) this.drive(mover, mover.frame + step)
+				this.recordStep = startStep + step + 1
+				this.world.step(dt)
+				record()
+			}
+		} finally {
+			for (const mover of movers) this.drive(mover, Infinity)
+		}
+		const sounds = this.recording
+		this.recording = null
+		return { frames, sounds }
 	}
 
-	simulateThrow() {
-		this.animstate = 'simulate';
-		this.iteration = 0;
-		this.rolling = true;
-		while (!this.throwFinished(true)) {
-			++this.iteration;
-			this.world.step(this.framerate);
+	// Puts a die of a throw that is still playing back where its recording has it at `frame`, moving
+	// towards the next one; past the end it rests at its final pose.
+	drive({ mesh, t, j }, frame) {
+		const body = mesh.body
+		const last = t.frames.length - 1
+		const a = t.frames[Math.max(0, Math.min(last, frame))]
+		const b = t.frames[Math.max(0, Math.min(last, frame + 1))]
+		const k = j * 7
+		body.position.set(a[k], a[k + 1], a[k + 2])
+		body.quaternion.set(a[k + 3], a[k + 4], a[k + 5], a[k + 6])
+		if (a === b) {
+			body.velocity.setZero()
+			body.angularVelocity.setZero()
+			return
 		}
+		const dt = this.framerate
+		body.velocity.set((b[k] - a[k]) / dt, (b[k + 1] - a[k + 1]) / dt, (b[k + 2] - a[k + 2]) / dt)
+		const qa = new THREE.Quaternion(a[k + 3], a[k + 4], a[k + 5], a[k + 6])
+		const turn = new THREE.Quaternion(b[k + 3], b[k + 4], b[k + 5], b[k + 6]).multiply(qa.invert())
+		if (turn.w < 0) turn.set(-turn.x, -turn.y, -turn.z, -turn.w)
+		const sin = Math.hypot(turn.x, turn.y, turn.z)
+		const rate = sin > 1e-9 ? 2 * Math.atan2(sin, turn.w) / sin / dt : 0
+		body.angularVelocity.set(turn.x * rate, turn.y * rate, turn.z * rate)
 	}
 
-	animateThrow(threadid, callback){
-		this.animstate = 'throw';
-		let time = Date.now();
-		this.last_time = this.last_time || time - (this.framerate*1000);
-		let time_diff = (time - this.last_time) / 1000;
-		let neededSteps = Math.floor(time_diff / this.framerate);
-
-		// Check before every step, the way simulateThrow does, so the replay freezes each die on
-		// the same step the simulation did and lands on the same face.
-		let finished = false;
-		let steps = 0;
-		for(; steps < neededSteps; steps++) {
-			if (this.running == threadid && this.throwFinished()) {
-				finished = true;
-				break;
-			}
-			++this.iteration;
-			this.world.step(this.framerate);
-			++this.steps;
-		}
-
-		this.applyPixelRatio();
-
-		// update physics interactions visually
-		for (let i = 0, l = this.diceList.length; i < l; i++) {
-			const dicemesh = this.diceList[i];
-			if (dicemesh.body) {
-				dicemesh.position.copy(dicemesh.body.position);
-				dicemesh.quaternion.copy(dicemesh.body.quaternion);
-			}
-		}
-
-		this.renderer.render(this.scene, this.camera);
-		this.last_time = this.last_time + steps*this.framerate*1000;
-
-		// roll finished
-		if (this.running == threadid && finished) {
-			this.running = false;
-			this.rolling = false;
-			if (this.pendingWorldBox) this.makeWorldBox();
-			this.applyPixelRatio();
-			if(callback) callback.call(this, this.notationVectors);
-			
-			this.running = Date.now();
-			this.animateAfterThrow(this.running);
-			return;
-		}
-
-		// roll not finished, keep animating
-		if (this.running == threadid) {
-			((animateCallback, tid, at, aftercall, vecs) => {
-				if (!at && time_diff < this.framerate) {
-					setTimeout(() => { requestAnimationFrame(() => { animateCallback.call(this, tid, aftercall, vecs); }) }, (this.framerate - time_diff) * 1000);
-				} else {
-					requestAnimationFrame(() => { animateCallback.call(this, tid, aftercall, vecs); });
-				}
-			}).bind(this)(this.animateThrow, threadid, this.adaptive_timestep, callback);
-		}
+	// Simulates a throw to the end, relabels faces for forced results and queues its playback, which
+	// starts a couple of steps ahead so the simulation is done by then. Other throws keep playing.
+	launch(meshes, forced = [], done) {
+		const dice = meshes.filter(Boolean)
+		const startStep = this.clockStep() + LEAD_STEPS
+		const { frames, sounds } = this.simulate(dice, startStep)
+		meshes.forEach((mesh, i) => {
+			if (!mesh || forced[i] === undefined || mesh.getLastValue().value == forced[i]) return
+			this.swapDiceFace(mesh, forced[i])
+		})
+		this.throws.push({ dice, frames, sounds, startStep, frame: -1, done })
+		this.rolling = true
+		this.requestFrame()
 	}
 
-	animateAfterThrow(threadid) {
-		this.animstate = 'afterthrow';
-		let time = Date.now();
-		let time_diff = (time - this.last_time) / 1000;
-		if (time_diff > 3) time_diff = this.framerate;
+	requestFrame() {
+		if (this.frameRequested || this.disposed) return
+		this.frameRequested = true
+		requestAnimationFrame(now => this.frame(now))
+	}
 
-		this.running = false;
-		this.last_time = time;
-		this.renderer.render(this.scene, this.camera);
-		if (this.running == threadid) {
-			((animateCallback, tid, at) => {
-				if (!at && time_diff < this.framerate) {
-					setTimeout(() => { requestAnimationFrame(() => { animateCallback.call(this, tid); }) }, (this.framerate - time_diff) * 1000);
-				} else {
-					requestAnimationFrame(() => { animateCallback.call(this, tid); });
-				}
-			}).bind(this)(this.animateAfterThrow, threadid, this.adaptive_timestep);
+	// The one render loop: plays back every throw from its recording on the shared step clock, runs
+	// the pops, sweeps and twinkles, and renders when something changed. Nothing renders when idle.
+	frame(now) {
+		this.frameRequested = false
+		if (this.disposed) return
+		const step = this.clockStep()
+		let changed = false
+		const finished = []
+		for (const t of this.throws) {
+			const last = t.frames.length - 1
+			const f = Math.max(0, Math.min(last, step - t.startStep))
+			if (f !== t.frame) {
+				const poses = t.frames[f]
+				t.dice.forEach((mesh, j) => {
+					mesh.position.set(poses[j * 7], poses[j * 7 + 1], poses[j * 7 + 2])
+					mesh.quaternion.set(poses[j * 7 + 3], poses[j * 7 + 4], poses[j * 7 + 5], poses[j * 7 + 6])
+				})
+				if (this.sounds) t.sounds.forEach(sound => { if (sound.step > t.startStep + t.frame && sound.step <= t.startStep + f) this.playSound(sound) })
+				t.frame = f
+				changed = true
+			}
+			if (f === last) finished.push(t)
 		}
+		if (finished.length) {
+			this.throws = this.throws.filter(t => !finished.includes(t))
+			for (const t of finished) {
+				for (const mesh of t.dice) {
+					mesh.moving = false
+					if (!mesh.result.length) mesh.storeRolledValue(mesh.resultReason)
+				}
+			}
+			if (!this.throws.length) {
+				this.rolling = false
+				if (this.pendingWorldBox) this.makeWorldBox()
+			}
+			finished.forEach(t => t.done && t.done.call(this))
+		}
+		if (this.animatePops(now)) changed = true
+		this.applyPixelRatio()
+		if (changed || finished.length) this.renderer.render(this.scene, this.camera)
+		if (this.throws.length || this.popping()) this.requestFrame()
 	}
 
 	// highlightResult: true | { glow: true | number (emissive intensity), pop: true,
 	//   style: "auto" | "glow" | "ink" | "gilded", color: fill colour for ink and gilded }
-	highlightOptions() {
-		const option = this.highlightResult
+	highlightOptions(option = this.highlightResult) {
 		if (!option) return { glow: 0, pop: false }
 		const glow = option === true || option.glow === undefined ? true : option.glow
 		const pop = option === true || option.pop === undefined ? true : option.pop
@@ -1167,11 +1174,15 @@ class DiceBox {
 		return { glow: glow === true ? 1 : Number(glow) || 0, pop: Boolean(pop), style, color: option.color || null }
 	}
 
-	// Dropped dice are struck through; the rest get the result highlight.
-	highlightDice(meshes) {
+	// Dropped dice are struck through; the rest get the result highlight (the throw's own, if it
+	// gave one).
+	highlightDice(meshes, highlight) {
 		meshes = meshes.filter(mesh => mesh && mesh.parent)
-		meshes.forEach(mesh => { if (mesh.mark === "dropped") this.DiceFactory.dropResult(mesh) })
-		const { glow, pop, style, color } = this.highlightOptions()
+		meshes.forEach(mesh => {
+			mesh.highlight = highlight
+			if (mesh.mark === "dropped") this.DiceFactory.dropResult(mesh)
+		})
+		const { glow, pop, style, color } = this.highlightOptions(highlight)
 		const kept = meshes.filter(mesh => mesh.mark !== "dropped")
 		const styles = glow ? kept.map(mesh => this.DiceFactory.glowResult(mesh, glow, style, color)) : []
 		const sweep = styles.includes("gilded")
@@ -1189,16 +1200,14 @@ class DiceBox {
 			const mesh = this.diceList[index]
 			if (!mesh) continue
 			mesh.mark = state === "kept" || state === "dropped" ? state : null
-			if (mesh.parent && mesh.body && mesh.body.type === CANNON.Body.KINEMATIC && !mesh.rerolling) settled.push(mesh)
+			if (mesh.parent && !mesh.moving) settled.push(mesh)
 		}
 		if (!settled.length) return
-		const { glow, style, color } = this.highlightOptions()
 		for (const mesh of settled) {
+			const { glow, style, color } = this.highlightOptions(mesh.highlight === undefined ? this.highlightResult : mesh.highlight)
 			if (mesh.mark === "dropped") {
-				if (this.popping.includes(mesh)) {
-					this.scaleDice([mesh], 1)
-					this.popping = this.popping.filter(m => m !== mesh)
-				}
+				this.scaleDice([mesh], 1)
+				this.pops.forEach(pop => { pop.meshes = pop.meshes.filter(m => m !== mesh) })
 				this.DiceFactory.dropResult(mesh)
 			} else if (glow) {
 				this.DiceFactory.glowResult(mesh, glow, style, color)
@@ -1206,35 +1215,48 @@ class DiceBox {
 				this.DiceFactory.unglow(mesh)
 			}
 		}
-		if (!this.rolling && !this.popping.length) this.renderer.render(this.scene, this.camera)
+		if (!this.rolling && !this.popping()) this.renderer.render(this.scene, this.camera)
 	}
 
-	// A brief scale-up and settle on the render loop. Bodies are kinematic by now and only the
-	// meshes are scaled (and lifted so they stay on the table), so physics and results are untouched.
-	// With sweep it also runs the gilded shimmer across the numbers, once. With twinkle, glitter flecks
-	// fade their glints in and shimmer slowly for TWINKLE_MS, then hold still.
+	// A brief scale-up and settle, run by the render loop. Bodies are at rest and only the meshes are
+	// scaled (and lifted so they stay on the table), so physics and results are untouched. With sweep
+	// it also runs the gilded shimmer across the numbers, once. With twinkle, glitter flecks fade their
+	// glints in and shimmer slowly for TWINKLE_MS, then hold still.
 	popDice(meshes, sweep = false, twinkle = false) {
-		this.endPop()
-		const token = ++this.popToken
-		this.popping = meshes
-		const start = performance.now()
-		const gild = this.DiceFactory.gild_sweep
-		const glint = this.DiceFactory.glint_state.value
-		const duration = Math.max(POP_MS, sweep ? SWEEP_MS : 0, twinkle ? TWINKLE_MS : 0)
-		const frame = now => {
-			if (token !== this.popToken) return
-			const elapsed = now - start
-			const t = Math.min(1, elapsed / POP_MS)
+		const now = performance.now()
+		if (meshes.length) this.pops.push({ meshes, start: now })
+		if (sweep) this.sweepStart = now
+		if (twinkle) this.twinkleStart = now
+		this.requestFrame()
+	}
+
+	popping() {
+		return this.pops.length > 0 || this.sweepStart !== null || this.twinkleStart !== null
+	}
+
+	animatePops(now = performance.now()) {
+		const active = this.popping()
+		this.pops = this.pops.filter(pop => {
+			const t = Math.min(1, (now - pop.start) / POP_MS)
 			const rise = 0.3
 			const k = t < rise ? 1 - (1 - t / rise) ** 3 : 1 - smoothstep(0, 1, (t - rise) / (1 - rise))
-			this.scaleDice(this.popping, 1 + POP_SCALE * k)
-			if (sweep) gild.value = elapsed < SWEEP_MS ? -0.3 + 1.6 * elapsed / SWEEP_MS : 2
-			if (twinkle) glint.set(smoothstep(0, 0.4, elapsed / TWINKLE_MS), Math.min(elapsed, TWINKLE_MS) / 1000)
-			this.renderer.render(this.scene, this.camera)
-			if (elapsed < duration) requestAnimationFrame(frame)
-			else this.popping = []
+			this.scaleDice(pop.meshes, 1 + POP_SCALE * k)
+			return t < 1
+		})
+		if (this.sweepStart !== null) {
+			const elapsed = now - this.sweepStart
+			this.DiceFactory.gild_sweep.value = elapsed < SWEEP_MS ? -0.3 + 1.6 * elapsed / SWEEP_MS : 2
+			if (elapsed >= SWEEP_MS) this.sweepStart = null
 		}
-		requestAnimationFrame(frame)
+		const glint = this.DiceFactory.glint_state.value
+		// flecks never glint while dice tumble, so they don't flicker from frame to frame
+		if (this.throws.length) glint.x = 0
+		else if (this.twinkleStart !== null) {
+			const elapsed = now - this.twinkleStart
+			glint.set(smoothstep(0, 0.4, elapsed / TWINKLE_MS), Math.min(elapsed, TWINKLE_MS) / 1000)
+			if (elapsed >= TWINKLE_MS) this.twinkleStart = null
+		}
+		return active
 	}
 
 	scaleDice(meshes, scale) {
@@ -1245,17 +1267,18 @@ class DiceBox {
 	}
 
 	endPop() {
-		++this.popToken
+		this.pops.forEach(pop => this.scaleDice(pop.meshes, 1))
+		this.pops = []
+		this.sweepStart = null
+		this.twinkleStart = null
 		this.DiceFactory.gild_sweep.value = 2
 		this.DiceFactory.glint_state.value.x = 0
-		if (this.popping.length) this.scaleDice(this.popping, 1)
-		this.popping = []
 	}
 
 	// throwFrom: "any" (a random direction), "sides" (from the left or right wall), "left", "right".
 	// Returns +1 for a throw to the right, -1 to the left, 0 for any direction.
-	throwSide() {
-		switch (this.throwFrom) {
+	throwSide(throwFrom = this.throwFrom) {
+		switch (throwFrom) {
 			case "sides": return Math.random() < 0.5 ? 1 : -1
 			case "left": return 1
 			case "right": return -1
@@ -1263,15 +1286,8 @@ class DiceBox {
 		}
 	}
 
-	startClickThrow(notation) {
-		// if (this.rolling) return;
-		if(this.rolling) {
-			this.clearDice();
-			this.rolling = false
-			if (this.pendingWorldBox) this.makeWorldBox()
-		}
-
-		const side = this.throwSide()
+	startClickThrow(notation, options = {}) {
+		const side = this.throwSide(options.throwFrom ?? this.throwFrom)
 		if (side) {
 			// mostly sideways, fast enough to cross the box whatever its size: a die sliding on the
 			// felt loses about 0.6 g, so this speed carries it most of the way and off the far wall
@@ -1292,7 +1308,7 @@ class DiceBox {
 
 	// Removes every die. With {fade: ms} the canvas fades out first (a CSS opacity transition, so
 	// nothing is re-rendered) and a promise resolves once the dice are gone. A roll that starts
-	// mid-fade cancels it.
+	// mid-fade cancels it. Throws still rolling are dropped and never resolve.
 	clearDice({ fade = 0 } = {}) {
 		const token = ++this.clearToken;
 		const canvas = this.renderer && this.renderer.domElement;
@@ -1303,19 +1319,27 @@ class DiceBox {
 				if (token === this.clearToken) this.clearDice();
 			});
 		}
-		if (canvas) {
-			canvas.style.transition = '';
-			canvas.style.opacity = '';
-		}
+		this.cancelFade();
 
-		this.running = false;
+		this.throws = [];
+		if (this.rolling) {
+			this.rolling = false;
+			if (this.pendingWorldBox) this.makeWorldBox();
+		}
 		this.endPop();
 		let dice;
 		while (dice = this.diceList.pop()) {
-			this.scene.remove(dice); 
+			this.scene.remove(dice);
 			if (dice.body) this.world.removeBody(dice.body);
 		}
 		this.renderer.render(this.scene, this.camera);
+	}
+
+	cancelFade() {
+		const canvas = this.renderer && this.renderer.domElement;
+		if (!canvas) return;
+		canvas.style.transition = '';
+		canvas.style.opacity = '';
 	}
 
 	// Tears the box down: stops listening for resizes, frees GPU memory and removes the canvas.
@@ -1347,12 +1371,17 @@ class DiceBox {
 				...this.diceList[id].result.at(-1)
 			}
 		}
-		let counter = 0
-		const modifier = this.notationVectors.constant ? parseInt(`${this.notationVectors.op}${this.notationVectors.constant}`) : 0
+		return this.rollResults(this.notationVectors, 0)
+	}
+
+	// The results of one roll() whose dice start at `first` in diceList.
+	rollResults(notationVectors, first) {
+		let counter = first
+		const modifier = notationVectors.constant ? parseInt(`${notationVectors.op}${notationVectors.constant}`) : 0
 		let rollTotal = modifier
 		const result = {
-			notation: this.notationVectors.notation,
-			sets: this.notationVectors.set.map(set => {
+			notation: notationVectors.notation,
+			sets: notationVectors.set.map(set => {
 				const endCount = counter + set.num - 1
 				let setTotal = 0
 				const rolls = []
@@ -1386,52 +1415,89 @@ class DiceBox {
 		return result
 	}
 
-	async roll(notationSting){
-		this.notationVectors = this.startClickThrow(notationSting)
-		if(this.notationVectors){
-			// const DL = this.diceList
-			return new Promise((resolve,reject) => {
-				this.rollDice(() => {
-					this.highlightDice(this.diceList)
-					const results = this.getDiceResults()
-	
+	// The themes of a throw: the box's own, or one per colorset given (cycled over its dice).
+	// Synchronous when every theme is ready, so dice spawn in the same call (and markDice can follow
+	// it at once); otherwise a promise.
+	throwThemes(colorset) {
+		if (!colorset) return [this.boxResolved]
+		const list = Array.isArray(colorset) ? colorset : [colorset]
+		const ready = list.map(c => this.resolvedThemes.get(themeKey(c, this)))
+		if (ready.every(Boolean)) return ready
+		return Promise.all(list.map(c => this.resolveTheme(c)))
+	}
+
+	withThemes(colorset, start) {
+		const themes = this.throwThemes(colorset)
+		return themes instanceof Promise ? themes.then(start) : start(themes)
+	}
+
+	spawnThrow(notationVectors, themes) {
+		const meshes = notationVectors.vectors.map((vector, i) => this.spawnDice(vector, themes[i % themes.length]))
+		this.trimThemes()
+		return meshes
+	}
+
+	// roll(notation, { colorset, clear, throwFrom, highlightResult }): colorset is a stock colorset name
+	// or a custom colorset (or an array of them, one per die in order, cycled), for this throw only;
+	// clear: false keeps the dice on the table and the throws still rolling, and resolves with the
+	// results of this throw alone.
+	async roll(notationSting, options = {}){
+		return this.withThemes(options.colorset, themes => {
+			const clear = options.clear !== false
+			if (clear) this.clearDice()
+			else {
+				++this.clearToken
+				this.cancelFade()
+			}
+			const notationVectors = this.startClickThrow(notationSting, options)
+			if (clear) this.notationVectors = notationVectors
+			const first = this.diceList.length
+			return new Promise(resolve => {
+				const finish = () => {
+					const results = this.rollResults(notationVectors, first)
+
 					// setting up a couple of ways to consume the final results
-					// call onRollComplete 
+					// call onRollComplete
 					this.onRollComplete(results)
-	
+
 					// dispatch an event with the results object for other UI elements to listen for
 					const event = new CustomEvent('rollComplete', {detail: results})
 					document.dispatchEvent(event)
-	
+
 					resolve(results)
+				}
+				if (notationVectors.error) return finish()
+				const meshes = this.spawnThrow(notationVectors, themes)
+				this.launch(meshes, notationVectors.result, () => {
+					this.highlightDice(meshes, options.highlightResult)
+					finish()
 				})
 			})
-		}
+		})
 	}
 
+	// Rerolls dice on the table by id. Dice still rolling are left alone.
 	async reroll(diceIdArray) {
-		this.rolling = true;
-		this.running = Date.now();
-		this.iteration = 0
-		this.endPop()
+		const meshes = diceIdArray.map(dieId => this.diceList[dieId]).filter(mesh => mesh && mesh.parent && !mesh.moving)
 		return new Promise((resolve,reject) => {
-			diceIdArray.forEach(dieId => {
-				const dicemesh = this.diceList[dieId]
+			meshes.forEach(dicemesh => {
+				this.scaleDice([dicemesh], 1)
 				this.DiceFactory.unglow(dicemesh)
 				dicemesh.mark = null
 				dicemesh.rerolls += 1;
 				dicemesh.rerolling = true;
+				dicemesh.moving = true;
 				dicemesh.body.wakeUp();
 				dicemesh.body.type = CANNON.Body.DYNAMIC;
 				dicemesh.body.angularVelocity = new CANNON.Vec3(25, 25, 25);
 				dicemesh.body.velocity = new CANNON.Vec3(0, 0, 3000);
 			})
-			this.animateThrow(this.running, () => {
-				this.highlightDice(diceIdArray.map(dieId => this.diceList[dieId]))
+			this.launch(meshes, [], () => {
+				this.highlightDice(meshes, meshes[0] && meshes[0].highlight)
 				const results = diceIdArray.map(dieId => this.getDiceResults(dieId))
 
 				this.onRerollComplete(results)
-				
+
 				// dispatch an event with the results object for other UI elements to listen for
 				const event = new CustomEvent('rerollComplete', {detail: results})
 				document.dispatchEvent(event)
@@ -1441,79 +1507,45 @@ class DiceBox {
 		})
 	}
 
-	async add(notationSting){
-		let dieCount = this.diceList.length
-		if(!dieCount) return this.roll(notationSting)
+	// add(notation, { colorset, throwFrom, highlightResult }): throws more dice without clearing the
+	// table, even while other throws are still rolling, and resolves with the results of its dice.
+	async add(notationSting, options = {}){
+		return this.withThemes(options.colorset, themes => {
+			if (!this.diceList.length) return this.roll(notationSting, options)
 
-		// keep the dice on the table if a fade-out was under way
-		++this.clearToken
-		this.endPop()
-		this.renderer.domElement.style.transition = ''
-		this.renderer.domElement.style.opacity = ''
+			// keep the dice on the table if a fade-out was under way
+			++this.clearToken
+			this.cancelFade()
 
-		let addNotationVectors = this.startClickThrow(notationSting)
-		let diceIdArray = []
+			const addNotationVectors = this.startClickThrow(notationSting, options)
+			const first = this.diceList.length
+			const meshes = this.spawnThrow(addNotationVectors, themes)
+			const diceIdArray = meshes.map((mesh, i) => mesh ? first + i : null).filter(id => id !== null)
 
-		for (let i=0, len=addNotationVectors.vectors.length; i < len; ++i) {
-			this.spawnDice(addNotationVectors.vectors[i]);
-		}
+			// let our vectors combine
+			this.notationVectors = DiceNotation.mergeNotation(this.notationVectors, addNotationVectors)
 
-		this.simulateThrow();
-		this.steps = 0;
-		this.iteration = 0;
+			return new Promise((resolve,reject) => {
+				this.launch(meshes, addNotationVectors.result, () => {
+					this.highlightDice(diceIdArray.map(dieId => this.diceList[dieId]), options.highlightResult)
+					const results = diceIdArray.map(dieId => this.getDiceResults(dieId))
 
-		//reset dice vectors - for just the dice added
-		for (let i=0, len=addNotationVectors.vectors.length; i < len; ++i) {
-			const index = dieCount + i
-			if (!this.diceList[index]) continue;
+					// setting up a couple of ways to consume the dice added results
+					// call onAddDiceComplete
+					this.onAddDiceComplete(results)
 
-			//reset dice vectors
-			this.spawnDice(addNotationVectors.vectors[i], this.diceList[index]);
-			diceIdArray.push(index)
-		}
+					// dispatch an event with the results object for other UI elements to listen for
+					const event = new CustomEvent('addDiceComplete', {detail: results})
+					document.dispatchEvent(event)
 
-		//check forced results, fix dice faces if necessary
-		if (addNotationVectors.result && addNotationVectors.result.length > 0) {
-			for (let i=0;i<addNotationVectors.result.length;i++) {
-				const index = dieCount + i
-				let dicemesh = this.diceList[index];
-				if (!dicemesh) continue;
-				if (dicemesh.getLastValue().value == addNotationVectors.result[i]) continue;
-				this.swapDiceFace(dicemesh, addNotationVectors.result[i]);
-			}
-		}
-		
-
-
-		// let our vectors combine
-		this.notationVectors = DiceNotation.mergeNotation(this.notationVectors, addNotationVectors)
-
-		return new Promise((resolve,reject) => {
-			const callback = () => {
-				this.highlightDice(diceIdArray.map(dieId => this.diceList[dieId]))
-				const results = diceIdArray.map(dieId => this.getDiceResults(dieId))
-	
-				// setting up a couple of ways to consume the dice added results
-				// call onAddDiceComplete 
-				this.onAddDiceComplete(results)
-	
-				// dispatch an event with the results object for other UI elements to listen for
-				const event = new CustomEvent('addDiceComplete', {detail: results})
-				document.dispatchEvent(event)
-	
-				resolve(results)
-			}
-
-			// animate the previously simulated roll
-			this.rolling = true;
-			this.running = Date.now();
-			this.last_time = 0;
-			this.animateThrow(this.running, callback);
+					resolve(results)
+				})
+			})
 		})
 	}
 
 	async remove(diceIdArray){
-		
+
 		return new Promise((resolve,reject) => {
 			const results = []
 			diceIdArray.forEach(dieId => {
@@ -1535,48 +1567,6 @@ class DiceBox {
 			resolve(results)
 
 		})
-	}
-
-	rollDice(callback){
-
-		if (this.notationVectors.error) {
-			callback.call(this);
-			return;
-		}
-
-		// this.camera.position.z = this.cameraHeight.far;
-		this.clearDice();
-
-		for (let i=0, len=this.notationVectors.vectors.length; i < len; ++i) {
-			this.spawnDice(this.notationVectors.vectors[i]);
-		}
-		this.simulateThrow();
-		this.steps = 0;
-		this.iteration = 0;
-
-		for (let i=0, len=this.diceList.length; i < len; ++i) {
-			if (!this.diceList[i]) continue;
-			
-			//reset dice vectors
-			this.spawnDice(this.notationVectors.vectors[i],this.diceList[i]);
-		}
-		
-		//check forced results, fix dice faces if necessary
-		if (this.notationVectors.result && this.notationVectors.result.length > 0) {
-			for (let i=0;i<this.notationVectors.result.length;i++) {
-				let dicemesh = this.diceList[i];
-				if (!dicemesh) continue;
-				if (dicemesh.getLastValue().value == this.notationVectors.result[i]) continue;
-				this.swapDiceFace(dicemesh, this.notationVectors.result[i]);
-			}
-		}
-
-		// animate the previously simulated roll
-		this.rolling = true;
-		this.running = Date.now();
-		this.last_time = 0;
-		this.animateThrow(this.running, callback);
-
 	}
 }
 
