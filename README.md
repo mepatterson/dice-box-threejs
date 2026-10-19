@@ -41,6 +41,7 @@ const defaultConfig = {
 	glass_refraction: true, // false | { ior: 1.5, strength: 1, dispersion: 0.02 }: the room seen through glass
 	glass_edges: 0.35, // 0 to 1: how much glass bevels stand out
 	environment: "studio", // or a URL, or { url, intensity: 1, rotation: 0 }; what metal and glass reflect
+	fontTimeout: 3000, // ms to wait for a colorset's number font before falling back to the default
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
@@ -163,6 +164,39 @@ faces never change.
 ### Labels
 A colorset's `outline` draws an outline round the numbers in that colour; `outline: "none"` (or
 `false`) leaves it off.
+
+### Number font
+A colorset can pick the font its numbers are drawn in (Arial by default):
+```
+theme_customColorset: { name: "ivory", foreground: "#2B1D0E", background: "#E8DCC4", outline: "none", texture: "bone", font: "Cinzel, serif", fontWeight: 700 }
+```
+- `font`: a CSS font family list, as in the `font` shorthand (quote names that need it, for example
+  `"'Roboto Slab', serif"`).
+- `fontWeight`: optional, for example `800` or `"bold"`.
+- `fontScale`: optional size factor (default 1).
+- `fontOffset`: optional vertical nudge in font sizes, positive moves the numbers down (default 0).
+
+The page includes the font, for example with a Google Fonts stylesheet:
+```
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Nunito:wght@800&display=swap">
+```
+The box never fetches fonts itself. Labels are drawn once and cached, so `initialize()` and
+`updateConfig()` wait for the face (`document.fonts.load()`, retried while a stylesheet is still
+loading) before building any dice, and the first roll never shows a fallback. If it isn't available
+within `fontTimeout` (3 s) the box logs a warning and draws that colorset with Arial; later calls only
+check for it instead of waiting again. Installed fonts (`Georgia`) and generic families work as well.
+
+Each font is measured once: its digits are scaled to the height of Arial's and centred where Arial's
+sit, and a font much wider than Arial is shrunk to fit the die's widest label (two-digit faces get
+less room than a lone digit), so most fonts need no tuning. `fontScale` and `fontOffset` adjust on
+top. The font applies to every number, the d4 corners, the dot under 6 and 9, the strike through a
+dropped die and the result highlights. Die types that bring their own font (pips, poker dice, the
+symbol dice) keep it.
+
+Fonts that read well at die size: Nunito 800 (rounded, the clearest), Roboto Slab 700 (sturdy slab),
+Bricolage Grotesque 800 (chunky display) and Cinzel 700 (engraved serif, its 1 looks like a Roman I).
+Thin faces and old-style figures (Marcellus) are hard to read on small dice, and a pixel font like
+Silkscreen only reads at its regular weight, and best on the larger single-digit dice.
 
 ### Throw direction
 `throwFrom: "any"` throws in a random direction from the edge opposite it. `"sides"` picks the left or

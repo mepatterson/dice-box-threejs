@@ -14,6 +14,7 @@ die land on a value chosen in advance.
 | `src/DiceNotation.js` | Parses `2d20+1d6+3@14,6,2` into sets, an optional constant and forced results. |
 | `src/DicePreset.js` | One die type (labels, values, mass, inertia, scale) built from `const/dice.js`. |
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
+| `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
 | `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, obsidian) and the wood grain. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
@@ -75,6 +76,18 @@ and `remove` act on existing dice by id.
   cached by type, label, colours and finish (metal labels are always drawn at full resolution, since
   their number edges sit against sharp reflections). Both get the renderer's anisotropic filtering
   (at most 8x).
+- **Number font** (`fonts.js`): a colorset's `font` (`fontOf`: family, weight, `fontScale`, `fontOffset`)
+  is part of the texture cache key. `loadTheme` awaits `loadFont` before `applyColorSet`, so no label is
+  drawn before the face is ready: `document.fonts.load()` for the digits, retried every 100 ms while it
+  finds no face (a stylesheet still loading) unless the family is installed (it changes the width of a
+  test string against two fallbacks), up to `fontTimeout`; then a warning and the default font, and later
+  loads of that face only check. `fontAt` turns a size laid out for Arial into the font's size and a
+  vertical shift from `fontMetrics`, measured once per font and widest label of the die type: the median
+  digit's ink height matched to Arial's (old-style figures have ascenders and descenders), capped so the
+  widest label is at most 1.3 times Arial's width (1.6 for single digits), and the digits' ink centred
+  where Arial's is. The dot of a 6 or 9 is drawn at the digit's right edge, which for Arial is where the
+  old `'  .'` put it. Die types whose definition sets a font (`ownFont`) keep it; variants are drawn with
+  the font in `diceLabel`.
 - **Materials** (`createMaterials`): one material per label slot, cached alongside its
   texture, so every d20 of one colorset shares the same materials. A colorset material of
   `none` (or `plastic`) or `wood` gives `MeshPhysicalMaterial` with a clear coat, `metal` and
