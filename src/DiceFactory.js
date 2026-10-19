@@ -29,8 +29,8 @@ class DiceFactory {
 		this.dice_material = '';
 
 		this.material_options = {
-			specular: 0xffffff,
-			color: 0xb5b5b5,
+			specular: 0x777777,
+			color: 0xffffff,
 			shininess: 5,
 			flatShading: true
 		};
@@ -492,6 +492,7 @@ class DiceFactory {
 		}
 
 		var compositetexture = new THREE.CanvasTexture(canvas);
+		compositetexture.colorSpace = THREE.SRGBColorSpace;
 		var bumpMap;
 		if (!isTexture) {
 			bumpMap = new THREE.CanvasTexture(canvasBump);

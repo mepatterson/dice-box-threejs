@@ -33,6 +33,10 @@ const defaultConfig = {
 	onRemoveDiceComplete: () => {},
 }
 
+const SPOT_INTENSITY = 2.0
+const HEMI_INTENSITY = 2.0
+const SHADOW_RADIUS = 4
+
 class DiceBox {
 
 	constructor(element_container, options = {}) {
@@ -143,7 +147,8 @@ class DiceBox {
 		this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
 		this.container.appendChild(this.renderer.domElement);
 		this.renderer.shadowMap.enabled = this.shadows;
-		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+		this.renderer.shadowMap.type = THREE.PCFShadowMap;
+		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 		this.renderer.setClearColor(0x000000, 0);
 
 		this.setDimensions(this.dimensions);
@@ -355,21 +360,22 @@ class DiceBox {
 
 		if (this.light) this.scene.remove(this.light);
 		if (this.light_amb) this.scene.remove(this.light_amb);
-		this.light = new THREE.SpotLight(this.color_spotlight, this.light_intensity);
+		// three r155+ uses physically based light units. Decay 0 keeps the light even across the
+		// table at this scene's pixel-sized units; the factors keep light_intensity's old meaning.
+		this.light = new THREE.SpotLight(this.color_spotlight, this.light_intensity * SPOT_INTENSITY, 0, Math.PI / 4, 0, 0);
 		this.light.position.set(-maxwidth / 2, maxwidth / 2, maxwidth * 3);
 		this.light.target.position.set(0, 0, 0);
-		this.light.distance = maxwidth * 5;
-		this.light.angle = Math.PI/4;
 		this.light.castShadow = this.shadows;
 		this.light.shadow.camera.near = maxwidth / 10;
 		this.light.shadow.camera.far = maxwidth * 5;
 		this.light.shadow.camera.fov = 50;
 		this.light.shadow.bias = 0.001;
+		this.light.shadow.radius = SHADOW_RADIUS;
 		this.light.shadow.mapSize.width = 1024;
 		this.light.shadow.mapSize.height = 1024;
 		this.scene.add(this.light);
 
-		this.light_amb = new THREE.HemisphereLight( 0xffffbb, 0x676771, this.light_intensity );
+		this.light_amb = new THREE.HemisphereLight( 0xffffbb, 0x676771, this.light_intensity * HEMI_INTENSITY );
 		this.scene.add(this.light_amb);
 
 		if (this.desk) this.scene.remove(this.desk);
