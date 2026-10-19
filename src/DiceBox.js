@@ -27,6 +27,8 @@ const defaultConfig = {
 	baseScale: 100,
 	strength: 1,
 	iterationLimit: 1000,
+	maxPixelRatio: 2,
+	textureScale: 0.5,
 	onRollComplete: () => {},
 	onRerollComplete: () => {},
 	onAddDiceComplete: () => {},
@@ -87,6 +89,8 @@ class DiceBox {
 		this.diceList = [];
 		this.notationVectors = null
 		this.dieIndex = 0
+		this.clearToken = 0
+		this.pendingWorldBox = false
 
 		//public variables
 		// this.framerate = (1/60);
@@ -145,6 +149,7 @@ class DiceBox {
 
 		// this.cannonDebugger = new CannonDebugger(this.scene,this.world)
 		this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+		this.renderer.setPixelRatio(this.pixelRatio());
 		this.container.appendChild(this.renderer.domElement);
 		this.renderer.shadowMap.enabled = this.shadows;
 		this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -160,8 +165,6 @@ class DiceBox {
 
 		// this.scene.add(new THREE.HemisphereLight( 0xffffbb, 0x676771, 1 ));
 
-		this.makeWorldBox()
-		
 		this.resizeWorld()
 
 		await this.loadTheme({
@@ -184,43 +187,62 @@ class DiceBox {
 	}
 
 	makeWorldBox(){
-		if(Object.keys(this.box_body).length) {
-			this.world.removeBody(this.box_body.desk)
-			this.world.removeBody(this.box_body.topWall)
-			this.world.removeBody(this.box_body.bottomWall)
-			this.world.removeBody(this.box_body.leftWall)
-			this.world.removeBody(this.box_body.rightWall)
+		if(!Object.keys(this.box_body).length) {
+			const desk_body_material = new CANNON.Material();
+			const barrier_body_material = new CANNON.Material();
+
+			this.world.addContactMaterial(new CANNON.ContactMaterial( desk_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
+			this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction: 0.6, restitution: 1.0}));
+			this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
+
+			const plane = (material, axis, angle) => {
+				const body = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material})
+				if (axis) body.quaternion.setFromAxisAngle(axis, angle);
+				this.world.addBody(body);
+				return body
+			}
+			this.box_body.desk = plane(desk_body_material)
+			this.box_body.topWall = plane(barrier_body_material, new CANNON.Vec3(1, 0, 0), Math.PI / 2)
+			this.box_body.bottomWall = plane(barrier_body_material, new CANNON.Vec3(1, 0, 0), -Math.PI / 2)
+			this.box_body.leftWall = plane(barrier_body_material, new CANNON.Vec3(0, 1, 0), -Math.PI / 2)
+			this.box_body.rightWall = plane(barrier_body_material, new CANNON.Vec3(0, 1, 0), Math.PI / 2)
 		}
 
-		const desk_body_material = new CANNON.Material();
-		const barrier_body_material = new CANNON.Material();
+		// Moving the walls mid-throw would change the physics and break forced results, so a
+		// resize during a throw is applied once the dice settle.
+		if (this.rolling) {
+			this.pendingWorldBox = true
+			return
+		}
+		this.pendingWorldBox = false
 
-		this.world.addContactMaterial(new CANNON.ContactMaterial( desk_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
-		this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction: 0.6, restitution: 1.0}));
-		this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
+		const w = this.display.containerWidth * 0.93
+		const h = this.display.containerHeight * 0.93
+		this.box_body.topWall.position.set(0, h, 0);
+		this.box_body.bottomWall.position.set(0, -h, 0);
+		this.box_body.leftWall.position.set(w, 0, 0);
+		this.box_body.rightWall.position.set(-w, 0, 0);
+		this.keepDiceInside(w, h)
+	}
 
-		this.box_body.desk = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material: desk_body_material})
-		this.world.addBody(this.box_body.desk);
-		
-		this.box_body.topWall = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material: barrier_body_material});
-		this.box_body.topWall.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), Math.PI / 2);
-		this.box_body.topWall.position.set(0, this.display.containerHeight * 0.93, 0);
-		this.world.addBody(this.box_body.topWall);
+	// After the box shrinks, slide resting dice back inside it. Only the position changes, so the
+	// face showing stays the same.
+	keepDiceInside(w, h) {
+		for (const dicemesh of this.diceList) {
+			const body = dicemesh.body
+			if (!body || !dicemesh.parent) continue
+			const r = dicemesh.geometry.boundingSphere ? dicemesh.geometry.boundingSphere.radius : 0
+			const x = Math.max(-w + r, Math.min(w - r, body.position.x))
+			const y = Math.max(-h + r, Math.min(h - r, body.position.y))
+			if (x === body.position.x && y === body.position.y) continue
+			body.position.x = x
+			body.position.y = y
+			dicemesh.position.copy(body.position)
+		}
+	}
 
-		this.box_body.bottomWall = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material: barrier_body_material});
-		this.box_body.bottomWall.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
-		this.box_body.bottomWall.position.set(0, -this.display.containerHeight * 0.93, 0);
-		this.world.addBody(this.box_body.bottomWall);
-
-		this.box_body.leftWall = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material: barrier_body_material});
-		this.box_body.leftWall.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), -Math.PI / 2);
-		this.box_body.leftWall.position.set(this.display.containerWidth * 0.93, 0, 0);
-		this.world.addBody(this.box_body.leftWall);
-
-		this.box_body.rightWall = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material: barrier_body_material});
-		this.box_body.rightWall.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.PI / 2);
-		this.box_body.rightWall.position.set(-this.display.containerWidth * 0.93, 0, 0);
-		this.world.addBody(this.box_body.rightWall);
+	pixelRatio() {
+		return Math.min(window.devicePixelRatio || 1, this.maxPixelRatio || Infinity)
 	}
 
 	async loadTheme(themeConfig){
@@ -335,6 +357,7 @@ class DiceBox {
 
 		this.makeWorldBox()
 
+		this.renderer.setPixelRatio(this.pixelRatio());
 		this.renderer.setSize(this.display.currentWidth * 2, this.display.currentHeight * 2);
 
 		this.cameraHeight.max = this.display.currentHeight / this.display.aspect / Math.tan(10 * Math.PI / 180);
@@ -343,8 +366,10 @@ class DiceBox {
 		this.cameraHeight.far = this.cameraHeight.max;
 		this.cameraHeight.close = this.cameraHeight.max / 2;
 
-		if (this.camera) this.scene.remove(this.camera);
-		this.camera = new THREE.PerspectiveCamera(20, this.display.currentWidth / this.display.currentHeight, 1, this.cameraHeight.max * 1.3);
+		if (!this.camera) this.camera = new THREE.PerspectiveCamera(20, 1, 1, 1);
+		this.camera.aspect = this.display.currentWidth / this.display.currentHeight;
+		this.camera.far = this.cameraHeight.max * 1.3;
+		this.camera.updateProjectionMatrix();
 
 		switch (this.animstate) {
 			case 'selector':
@@ -358,49 +383,55 @@ class DiceBox {
 		
 		const maxwidth = Math.max(this.display.containerWidth, this.display.containerHeight);
 
-		if (this.light) this.scene.remove(this.light);
-		if (this.light_amb) this.scene.remove(this.light_amb);
-		// three r155+ uses physically based light units. Decay 0 keeps the light even across the
-		// table at this scene's pixel-sized units; the factors keep light_intensity's old meaning.
-		this.light = new THREE.SpotLight(this.color_spotlight, this.light_intensity * SPOT_INTENSITY, 0, Math.PI / 4, 0, 0);
+		if (!this.light) {
+			// three r155+ uses physically based light units. Decay 0 keeps the light even across the
+			// table at this scene's pixel-sized units; the factors keep light_intensity's old meaning.
+			this.light = new THREE.SpotLight(this.color_spotlight, this.light_intensity * SPOT_INTENSITY, 0, Math.PI / 4, 0, 0);
+			this.light.shadow.camera.fov = 50;
+			this.light.shadow.bias = 0.001;
+			this.light.shadow.radius = SHADOW_RADIUS;
+			this.light.shadow.mapSize.width = 1024;
+			this.light.shadow.mapSize.height = 1024;
+			this.scene.add(this.light);
+
+			this.light_amb = new THREE.HemisphereLight( 0xffffbb, 0x676771, this.light_intensity * HEMI_INTENSITY );
+			this.scene.add(this.light_amb);
+
+			let shadowplane = new THREE.ShadowMaterial();
+			shadowplane.opacity = 0.5;
+			this.desk = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 1), shadowplane);
+			this.scene.add(this.desk);
+		}
 		this.light.position.set(-maxwidth / 2, maxwidth / 2, maxwidth * 3);
 		this.light.target.position.set(0, 0, 0);
 		this.light.castShadow = this.shadows;
 		this.light.shadow.camera.near = maxwidth / 10;
 		this.light.shadow.camera.far = maxwidth * 5;
-		this.light.shadow.camera.fov = 50;
-		this.light.shadow.bias = 0.001;
-		this.light.shadow.radius = SHADOW_RADIUS;
-		this.light.shadow.mapSize.width = 1024;
-		this.light.shadow.mapSize.height = 1024;
-		this.scene.add(this.light);
+		this.light.shadow.camera.updateProjectionMatrix();
 
-		this.light_amb = new THREE.HemisphereLight( 0xffffbb, 0x676771, this.light_intensity * HEMI_INTENSITY );
-		this.scene.add(this.light_amb);
-
-		if (this.desk) this.scene.remove(this.desk);
-		let shadowplane = new THREE.ShadowMaterial();
-		shadowplane.opacity = 0.5;
-		this.desk = new THREE.Mesh(new THREE.PlaneGeometry(this.display.containerWidth * 6, this.display.containerHeight * 6, 1, 1), shadowplane);
+		this.desk.scale.set(this.display.containerWidth * 6, this.display.containerHeight * 6, 1);
 		this.desk.receiveShadow = this.shadows;
-		this.scene.add(this.desk);
 
 		this.renderer.render(this.scene, this.camera);
 	}
 
 	resizeWorld(){
 		const resize = () => {
-			const canvas = this.renderer.domElement;
+			if (!this.renderer) return
 			const width = this.container.clientWidth;
 			const height = this.container.clientHeight;
-			const needResize = canvas.width !== width || canvas.height !== height;
+			const needResize = width !== this.display.containerWidth || height !== this.display.containerHeight || this.renderer.getPixelRatio() !== this.pixelRatio();
 			if (needResize) {
-				this.setDimensions(new THREE.Vector2(this.container.clientWidth, this.container.clientHeight))
+				this.setDimensions(new THREE.Vector2(width, height))
 			}
 			return needResize;
 		}
-		const debounceResize = debounce(resize)
-		window.addEventListener("resize", debounceResize)
+		this.onResize = debounce(resize)
+		window.addEventListener("resize", this.onResize)
+		if (typeof ResizeObserver !== "undefined") {
+			this.resizeObserver = new ResizeObserver(this.onResize)
+			this.resizeObserver.observe(this.container)
+		}
 	}
 
 	vectorRand({x, y}) {
