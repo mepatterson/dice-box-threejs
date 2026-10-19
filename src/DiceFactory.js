@@ -2,7 +2,7 @@
 import {DicePreset} from './DicePreset.js'
 import {MATERIALTYPES} from "./const/materialtypes"
 import {DICE_GEOM} from "./const/dice"
-import {woodGrain, makeSurface} from "./surfaces.js"
+import {woodGrain, makeSurface, spectrumLayer} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 
 import * as THREE from "three"
@@ -212,6 +212,7 @@ class DiceFactory {
 		this.surfaces = new Map();
 		this.surface_tints = new Map();
 		this.dice_accent = '';
+		this.dice_rainbow = false;
 		this.dice_iridescence = null;
 		this.label_font = null;
 		this.gild_sweep = { value: 2 };
@@ -451,17 +452,18 @@ class DiceFactory {
 
 	// Variants are drawn with the colorset the label was made with, even if it has changed since.
 	drawLabel(info, forecolor, variant) {
-		const saved = [this.dice_material, this.body_opacity, this.dice_accent, this.label_font];
+		const saved = [this.dice_material, this.body_opacity, this.dice_accent, this.dice_rainbow, this.label_font];
 		this.dice_material = info.material;
 		this.body_opacity = info.opacity;
 		this.dice_accent = info.accent;
+		this.dice_rainbow = info.rainbow;
 		this.label_font = info.font;
 		try {
 			return variant.strike || variant.recolor
 				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant.strike ? variant : null)
 				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
 		} finally {
-			[this.dice_material, this.body_opacity, this.dice_accent, this.label_font] = saved;
+			[this.dice_material, this.body_opacity, this.dice_accent, this.dice_rainbow, this.label_font] = saved;
 		}
 	}
 
@@ -732,7 +734,7 @@ class DiceFactory {
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
-				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, font: this.label_font, highlight: this.colordata && this.colordata.highlight };
+				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, rainbow: this.dice_rainbow, font: this.label_font, highlight: this.colordata && this.colordata.highlight };
 				if (isMetal(this.dice_material)) {
 					mat.onBeforeCompile = metalShader;
 					mat.metalnessMap = canvasTextures.bump;
@@ -862,7 +864,7 @@ class DiceFactory {
 		}
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
 		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
-		if (texture.surface) finish += this.dice_material + this.dice_accent;
+		if (texture.surface) finish += this.dice_material + this.dice_accent + (this.dice_rainbow ? 'rainbow' : '');
 		if (this.dice_iridescence !== null) finish += `iridescence${this.dice_iridescence}`;
 		finish += fontKey(this.labelFont(diceobj));
 		if (diceobj.shape == 'd4') {
@@ -1222,8 +1224,15 @@ class DiceFactory {
 		const accent = this.dice_accent || `#${new THREE.Color(backcolor).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
 		context.globalCompositeOperation = 'source-over';
 		// in glass the layers are inclusions: partly opaque, so the room still shows through them
-		context.globalAlpha = this.dice_material == 'glass' ? 0.5 : 1;
-		surface.layers.forEach((layer, k) => this.drawPattern(context, layer.color == 'accent' ? this.tintedLayer(name, k, layer, accent) : layer.mask, ts, index));
+		context.globalAlpha = this.dice_material == 'glass' ? surface.glass || 0.5 : 1;
+		const body = new THREE.Color(backcolor);
+		const lightness = 0.2126 * body.r + 0.7152 * body.g + 0.0722 * body.b;
+		const tone = lightness > 0.55 ? 'pale' : lightness < 0.15 && this.dice_material != 'glass' ? 'deep' : 'clear';
+		surface.layers.forEach((layer, k) => {
+			const spectrum = layer.color == 'spectrum' || (layer.hue && this.dice_rainbow);
+			const image = spectrum ? this.tintedLayer(name, k, layer, this.dice_accent && `#${new THREE.Color(this.dice_accent).getHexString()}`, tone) : layer.color == 'accent' ? this.tintedLayer(name, k, layer, accent) : layer.mask;
+			this.drawPattern(context, image, ts, index);
+		});
 		context.globalAlpha = 1;
 		if (surface.height && !isMetal(this.dice_material)) {
 			contextBump.globalAlpha = surface.bump;
@@ -1232,11 +1241,17 @@ class DiceFactory {
 		}
 	}
 
-	// An accent layer's white mask in the colorset's accent, made once per colour.
-	tintedLayer(name, k, layer, color) {
-		const key = `${name}|${k}|${color}`;
+	// An accent layer's white mask in the colorset's accent, or, given a tone, its hue field in the
+	// spectrum the accent picks, made once per colour.
+	tintedLayer(name, k, layer, color, tone = null) {
+		const key = `${name}|${k}|${color}|${tone}`;
 		let canvas = this.surface_tints.get(key);
 		if (canvas) return canvas;
+		if (tone !== null) {
+			canvas = spectrumLayer(layer, color, tone);
+			this.surface_tints.set(key, canvas);
+			return canvas;
+		}
 		canvas = document.createElement('canvas');
 		canvas.width = layer.mask.width;
 		canvas.height = layer.mask.height;
@@ -1271,6 +1286,7 @@ class DiceFactory {
 		this.dice_material = material == 'plastic' ? 'none' : material;
 		this.edge_color = colordata.hasOwnProperty("edge") ? colordata.edge:colordata.background;
 		this.dice_accent = colordata.accent || '';
+		this.dice_rainbow = !!colordata.rainbow;
 		this.dice_iridescence = typeof colordata.iridescence == 'number' ? Math.min(1, Math.max(0, colordata.iridescence)) : null;
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 	}
