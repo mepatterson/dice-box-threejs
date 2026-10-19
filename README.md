@@ -93,13 +93,15 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   "glass"`) and also good on deep coloured glass and on pale or near-black plastic, where it is
   softer and milkier or fuller to match. White numbers read best on dark bodies.
 - `obsidian`: volcanic glass. Tiny bright flecks (pale silver, or the colorset's `accent`) that glint
-  as the die turns and faint silvery bands for a near-black body under a mirror-like clear coat. White
+  once the die settles and faint silvery bands for a near-black body under a mirror-like clear coat. White
   numbers read best; gold looks richer. On glass the flecks keep full strength, so they show on pale
   and mid bodies too.
-- `sparkles`: glitter resin. A dense scatter of fine flecks and a few larger ones in white and the
-  accent (or a lighter body colour), each a tiny tilted mirror, so different flecks flash as the die
-  turns. Works on light and dark glass and on plastic; the numbers are drawn over it, clear of
-  flecks.
+- `sparkles`: glitter resin. Hexagonal chips a few pixels across and a few larger ones, in white and
+  the accent (or a lighter body colour), over a faint dust of tiny specks. Each chip is a small tilted
+  mirror: while the dice tumble the chips hold a steady sheen, and once they settle the glints fade in
+  and twinkle slowly for about a second, gleaming in the chip's own colour, then hold still. Works on
+  light and dark glass and on plastic; the numbers are drawn over it, clear of flecks. Obsidian's flecks
+  behave the same way.
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }

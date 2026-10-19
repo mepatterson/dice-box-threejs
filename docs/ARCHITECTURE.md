@@ -116,8 +116,14 @@ and `remove` act on existing dice by id.
   canvas (red 1, green the fleck's tilt direction, blue 1 minus its glint, so red minus blue is the glint, zero on
   the white background and the black numbers, and the red bump height is untouched); on plastic and glass
   `addGlint` gives the material that canvas as `glintMap` and `glintShader` (run before the glass patch) turns each
-  fleck into a tilted mirror: one sharp environment lookup in its reflected direction, squared so only bright parts
-  of the room flash, plus two key-light lobes, tinted by the fleck's colour. Glass adds it to its reflections
+  fleck into a tilted mirror. It always has a steady sheen that follows the face's light. Its glint (a blurred
+  environment lookup in its reflected direction, past a threshold so only bright parts of the room count, plus two
+  wide key-light lobes, capped) is scaled by `glint_state`, one uniform shared by every glinting material: x is 0
+  from the start of a throw (`endPop`), so tumbling flecks never flicker between frames, and y drives a slow
+  per-fleck twinkle. When dice settle `highlightDice` runs the pop loop (`popDice`) for `TWINKLE_MS` if any die on
+  the table glints, fading x in and advancing y, then nothing renders. Sheen and glint are the fleck's colour a
+  quarter of the way to white, so accent flecks gleam in the accent. Sparkle chips are hexagons with soft edges,
+  sized so they stay several pixels across and survive mipmapping; the dust under them doesn't glint. Glass adds it to its reflections
   (`DICE_GLINT`), plastic to its light; glass otherwise leaves that canvas unused, so a glinting glass label uploads
   one more texture. Metal is skipped, since its bump canvas is the paint mask. These are cached in `surface_tints` like the accent tints, keyed by accent and tone. A texture's
   `finish` (roughness, clear coat, iridescence, sheen) is merged into the plastic preset (`materialPreset`); glass
