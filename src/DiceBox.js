@@ -2,7 +2,8 @@ import * as THREE from "three"
 import * as CANNON from "cannon-es"
 
 import { DiceNotation } from './DiceNotation.js';
-import { DiceFactory } from './DiceFactory.js';
+import { DiceFactory, isMetal } from './DiceFactory.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { DiceColors } from './DiceColors.js';
 import { THEMES } from './const/themes.js';
 import { MATERIALTYPES } from './const/materialtypes.js';
@@ -32,6 +33,10 @@ const defaultConfig = {
 	rollingPixelRatio: null,
 	textureScale: 0.5,
 	glass_opacity: 0.35,
+	glass_refraction: false,
+	environment: "studio",
+	highlightResult: false,
+	throwFrom: "any",
 	preloadDice: null,
 	onRollComplete: () => {},
 	onRerollComplete: () => {},
@@ -48,6 +53,16 @@ const ENV_PANELS = [
 	[135, 40, 14, 25], [75, 35, 10, 10], [15, 45, 12, 16], [-45, 35, 12, 14], [-105, 40, 10, 9], [-165, 30, 12, 18],
 	[150, 50, 2, 120], [-30, 40, 2, 80], [60, 25, 2, 80],
 ]
+// An LDR photo clips its lamps and windows at white; pixels near white are scaled up to this many
+// times brighter so they light metal and glass the way they would in an HDR.
+const HIGHLIGHT_GAIN = 6
+const POP_MS = 350
+const POP_SCALE = 0.12
+
+const smoothstep = (a, b, x) => {
+	const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
+	return t * t * (3 - 2 * t)
+}
 
 class DiceBox {
 
@@ -101,6 +116,10 @@ class DiceBox {
 		this.dieIndex = 0
 		this.clearToken = 0
 		this.pendingWorldBox = false
+		this.envTarget = null
+		this.envReady = null
+		this.popToken = 0
+		this.popping = []
 
 		//public variables
 		// this.framerate = (1/60);
@@ -137,6 +156,7 @@ class DiceBox {
 			glass_opacity: this.glass_opacity
 		});
 		this.DiceFactory.setBumpMapping(true);
+		this.DiceFactory.setRefraction(this.glass_refraction);
 
 		// post config settings
 		this.surface = THEMES[this.theme_surface].surface
@@ -307,16 +327,109 @@ class DiceBox {
 		this.colorData = colorData
 
 		const material = this.DiceFactory.dice_material
-		if (MATERIALTYPES[material]?.envMapIntensity && !this.environment && this.renderer) this.environment = this.makeEnvironment()
-		this.DiceFactory.envMap = this.environment || null
+		if (MATERIALTYPES[material]?.envMapIntensity && this.renderer) await this.loadEnvironment()
 		// light passes through glass, so its shadows are lighter
 		if (this.desk) this.desk.material.opacity = SHADOW_OPACITY * (material == 'glass' ? 0.4 + 0.6 * this.DiceFactory.body_opacity : 1)
 	}
 
-	// Reflections for the metal and glass materials, built once per box: a dark studio with a band
-	// of light low around it and soft panels at mid height, so tilted facets and edges catch
-	// highlights while faces turned to the camera stay clear.
-	makeEnvironment() {
+	// Loads the reflection environment the first time a metal or glass colorset needs it.
+	loadEnvironment() {
+		if (!this.envReady) this.envReady = this.makeEnvironment(this.environment).then(target => this.useEnvironment(target))
+		return this.envReady
+	}
+
+	// Swaps the reflection environment ("studio", a URL, or {url, intensity, rotation}) without
+	// rebuilding anything: the cached metal and glass materials point at the new one, the old one is
+	// freed and the dice are drawn once. An environment nothing uses yet is only remembered.
+	setEnvironment(environment = "studio") {
+		this.environment = environment
+		if (!this.envReady) return Promise.resolve()
+		this.envReady = this.envReady.then(() => this.makeEnvironment(environment)).then(target => {
+			this.useEnvironment(target)
+			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+		})
+		return this.envReady
+	}
+
+	useEnvironment({ target, rotation, intensity }) {
+		if (this.disposed) {
+			target.dispose()
+			return
+		}
+		const old = this.envTarget
+		this.envTarget = target
+		this.DiceFactory.setEnvironment(target.texture, rotation, intensity)
+		if (old) old.dispose()
+	}
+
+	async makeEnvironment(environment) {
+		if (this.disposed) return { target: new THREE.WebGLRenderTarget(1, 1) }
+		const options = typeof environment === "string" ? { url: environment } : (environment || {})
+		const pmrem = new THREE.PMREMGenerator(this.renderer)
+		try {
+			if (options.url && options.url !== "studio") {
+				try {
+					const texture = await this.loadEquirect(options.url)
+					if (this.disposed) throw new Error("disposed")
+					const target = pmrem.fromEquirectangular(texture)
+					texture.dispose()
+					// photos are y-up; this scene is z-up with the camera looking down
+					const rotation = new THREE.Euler(Math.PI / 2, 0, options.rotation || 0, "ZYX")
+					return { target, rotation, intensity: options.intensity ?? 1 }
+				} catch (e) {
+					console.warn(`Unable to load environment ${options.url}, using the studio`)
+				}
+			}
+			return { target: this.makeStudio(pmrem), rotation: new THREE.Euler(), intensity: options.intensity ?? 1 }
+		} finally {
+			pmrem.dispose()
+		}
+	}
+
+	// An equirectangular .hdr, or an LDR image (JPEG, WebP, PNG) whose clipped highlights are
+	// stretched so lamps and windows read as light sources.
+	async loadEquirect(url) {
+		if (/\.hdr($|[?#])/i.test(url)) {
+			const texture = await new HDRLoader().loadAsync(url)
+			texture.mapping = THREE.EquirectangularReflectionMapping
+			return texture
+		}
+		const image = await new THREE.ImageLoader().setCrossOrigin("anonymous").loadAsync(url)
+		const width = Math.min(2048, image.width)
+		const height = Math.round(width * image.height / image.width)
+		const canvas = document.createElement("canvas")
+		canvas.width = width
+		canvas.height = height
+		const context = canvas.getContext("2d", { willReadFrequently: true })
+		context.drawImage(image, 0, 0, width, height)
+		const pixels = context.getImageData(0, 0, width, height).data
+		const linear = new Float32Array(256).map((v, i) => new THREE.Color().setRGB(i / 255, 0, 0, THREE.SRGBColorSpace).r)
+		const data = new Uint16Array(width * height * 4)
+		const toHalf = THREE.DataUtils.toHalfFloat
+		for (let y = 0; y < height; y++) {
+			// DataTextures start at the bottom row
+			let out = (height - 1 - y) * width * 4
+			for (let x = 0, i = y * width * 4; x < width; x++, i += 4, out += 4) {
+				const peak = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) / 255
+				const gain = 1 + HIGHLIGHT_GAIN * smoothstep(0.8, 1, peak) ** 2
+				data[out] = toHalf(linear[pixels[i]] * gain)
+				data[out + 1] = toHalf(linear[pixels[i + 1]] * gain)
+				data[out + 2] = toHalf(linear[pixels[i + 2]] * gain)
+				data[out + 3] = 0x3c00
+			}
+		}
+		const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.HalfFloatType)
+		texture.mapping = THREE.EquirectangularReflectionMapping
+		texture.colorSpace = THREE.LinearSRGBColorSpace
+		texture.magFilter = texture.minFilter = THREE.LinearFilter
+		texture.needsUpdate = true
+		return texture
+	}
+
+	// The default environment: a dark studio with a band of light low around it and soft panels at
+	// mid height, so tilted facets and edges catch highlights while faces turned to the camera stay
+	// clear.
+	makeStudio(pmrem) {
 		const scene = new THREE.Scene()
 		const light = value => new THREE.MeshBasicMaterial({ color: new THREE.Color(value, value, value), side: THREE.DoubleSide })
 		const band = new THREE.Mesh(new THREE.CylinderGeometry(20, 20, 14, 32, 1, true), light(1.5))
@@ -332,14 +445,12 @@ class DiceBox {
 			panel.scale.setScalar(size)
 			scene.add(panel)
 		}
-		const pmrem = new THREE.PMREMGenerator(this.renderer)
-		const environment = pmrem.fromScene(scene, 0.02).texture
-		pmrem.dispose()
+		const target = pmrem.fromScene(scene, 0.02)
 		scene.children.forEach(mesh => {
 			mesh.geometry.dispose()
 			mesh.material.dispose()
 		})
-		return environment
+		return target
 	}
 
 	async loadSounds(){
@@ -358,9 +469,9 @@ class DiceBox {
 			wood: 12
 		}
 
-		const hassound_dieMaterial = this.colorData.texture.material.match(/wood|metal/g)
+		const hassound_dieMaterial = this.colorData.texture.material.match(/wood|metal/)
 
-		this.sound_dieMaterial = hassound_dieMaterial ? this.colorData.texture.material : "plastic"
+		this.sound_dieMaterial = hassound_dieMaterial ? hassound_dieMaterial[0] : "plastic"
 		
 		if(!this.sounds_table.hasOwnProperty(this.surface)){
 			this.sounds_table[this.surface] = [];
@@ -418,6 +529,14 @@ class DiceBox {
 		if(options.theme_material){
 			this.theme_material = options.theme_material
 		}
+		if ("highlightResult" in options) this.highlightResult = options.highlightResult
+		if ("throwFrom" in options) this.throwFrom = options.throwFrom
+		if ("glass_refraction" in options) {
+			this.glass_refraction = options.glass_refraction
+			this.DiceFactory.setRefraction(options.glass_refraction)
+			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+		}
+		if ("environment" in options) await this.setEnvironment(options.environment)
 		if(options.theme_colorset || options.theme_texture || options.theme_material || options.theme_customColorset){
 			await this.loadTheme({
 				colorset: this.theme_colorset,
@@ -532,7 +651,7 @@ class DiceBox {
 	}
 
 	//returns an array of vectordata objects
-	getNotationVectors(notation, vector, boost, dist){
+	getNotationVectors(notation, vector, boost, dist, side = 0){
 
 		let notationVectors = new DiceNotation(notation);
 
@@ -554,18 +673,29 @@ class DiceBox {
 				vec.x /= dist;
 				vec.y /= dist;
 
-				let pos = {
-					x: this.display.containerWidth * (vec.x > 0 ? -1 : 1) * (this.wallScale - 0.03),
-					y: this.display.containerHeight * (vec.y > 0 ? -1 : 1) * (this.wallScale - 0.03),
-					z: Math.random() * 200 + 200
-				};
+				let pos
+				if (side) {
+					// just inside the side wall, somewhere in the middle 60% of its height
+					pos = {
+						x: -side * this.display.containerWidth * (this.wallScale - 0.03),
+						y: (Math.random() * 2 - 1) * 0.3 * this.display.containerHeight * this.wallScale,
+						z: Math.random() * 200 + 200
+					};
+				} else {
+					pos = {
+						x: this.display.containerWidth * (vec.x > 0 ? -1 : 1) * (this.wallScale - 0.03),
+						y: this.display.containerHeight * (vec.y > 0 ? -1 : 1) * (this.wallScale - 0.03),
+						z: Math.random() * 200 + 200
+					};
 
-				let projector = Math.abs(vec.x / vec.y);
-				if (projector > 1.0) pos.y /= projector; else pos.x *= projector;
+					let projector = Math.abs(vec.x / vec.y);
+					if (projector > 1.0) pos.y /= projector; else pos.x *= projector;
+				}
 
 				let velvec = this.vectorRand(vector);
 				velvec.x /= dist;
 				velvec.y /= dist;
+				if (side) velvec.y = Math.max(-0.35, Math.min(0.35, velvec.y / Math.abs(velvec.x))) * Math.abs(velvec.x);
 				let velocity, angle, axis;
 
 				if (diceobj.shape != "d2") {
@@ -987,12 +1117,77 @@ class DiceBox {
 		}
 	}
 
+	// highlightResult: true | { glow: true | number (emissive intensity), pop: true }
+	highlightDice(meshes) {
+		const option = this.highlightResult
+		if (!option) return
+		const glow = option === true || option.glow === undefined ? true : option.glow
+		const pop = option === true || option.pop === undefined ? true : option.pop
+		meshes = meshes.filter(mesh => mesh && mesh.parent)
+		if (glow) meshes.forEach(mesh => this.DiceFactory.glowResult(mesh, glow === true ? 1 : glow))
+		if (pop) this.popDice(meshes)
+	}
+
+	// A brief scale-up and settle on the render loop. Bodies are kinematic by now and only the
+	// meshes are scaled (and lifted so they stay on the table), so physics and results are untouched.
+	popDice(meshes) {
+		this.endPop()
+		const token = ++this.popToken
+		this.popping = meshes
+		const start = performance.now()
+		const frame = now => {
+			if (token !== this.popToken) return
+			const t = Math.min(1, (now - start) / POP_MS)
+			const rise = 0.3
+			const k = t < rise ? 1 - (1 - t / rise) ** 3 : 1 - smoothstep(0, 1, (t - rise) / (1 - rise))
+			this.scaleDice(meshes, 1 + POP_SCALE * k)
+			this.renderer.render(this.scene, this.camera)
+			if (t < 1) requestAnimationFrame(frame)
+			else this.popping = []
+		}
+		requestAnimationFrame(frame)
+	}
+
+	scaleDice(meshes, scale) {
+		for (const mesh of meshes) {
+			mesh.scale.setScalar(scale)
+			if (mesh.body) mesh.position.z = mesh.body.position.z + (scale - 1) * mesh.geometry.boundingSphere.radius * 0.5
+		}
+	}
+
+	endPop() {
+		++this.popToken
+		if (this.popping.length) this.scaleDice(this.popping, 1)
+		this.popping = []
+	}
+
+	// throwFrom: "any" (a random direction), "sides" (from the left or right wall), "left", "right".
+	// Returns +1 for a throw to the right, -1 to the left, 0 for any direction.
+	throwSide() {
+		switch (this.throwFrom) {
+			case "sides": return Math.random() < 0.5 ? 1 : -1
+			case "left": return 1
+			case "right": return -1
+			default: return 0
+		}
+	}
+
 	startClickThrow(notation) {
 		// if (this.rolling) return;
 		if(this.rolling) {
 			this.clearDice();
 			this.rolling = false
 			if (this.pendingWorldBox) this.makeWorldBox()
+		}
+
+		const side = this.throwSide()
+		if (side) {
+			// mostly sideways, fast enough to cross the box whatever its size: a die sliding on the
+			// felt loses about 0.6 g, so this speed carries it most of the way and off the far wall
+			const vector = { x: side, y: (Math.random() * 2 - 1) * 0.25 }
+			const width = 2 * this.display.containerWidth * this.wallScale
+			const speed = Math.sqrt(2 * 0.6 * 9.8 * this.gravity_multiplier * 0.9 * width) * (0.85 + 0.3 * Math.random()) * this.strength
+			return this.getNotationVectors(notation, vector, speed, Math.hypot(vector.x, vector.y), side)
 		}
 
 		let vector = { x: (Math.random() * 2 - 0.5) * this.display.currentWidth, y: -(Math.random() * 2 - 0.5) * this.display.currentHeight };
@@ -1023,6 +1218,7 @@ class DiceBox {
 		}
 
 		this.running = false;
+		this.endPop();
 		let dice;
 		while (dice = this.diceList.pop()) {
 			this.scene.remove(dice); 
@@ -1037,7 +1233,8 @@ class DiceBox {
 		window.removeEventListener("resize", this.onResize);
 		if (this.resizeObserver) this.resizeObserver.disconnect();
 		this.DiceFactory.dispose();
-		if (this.environment) this.environment.dispose();
+		if (this.envTarget) this.envTarget.dispose();
+		this.envTarget = null;
 		if (this.light) this.light.dispose();
 		if (this.desk) {
 			this.desk.geometry.dispose();
@@ -1047,6 +1244,7 @@ class DiceBox {
 		this.renderer.forceContextLoss();
 		this.renderer.domElement.remove();
 		this.initialized = false;
+		this.disposed = true;
 	}
 
 	getDiceResults(id){
@@ -1103,6 +1301,7 @@ class DiceBox {
 			// const DL = this.diceList
 			return new Promise((resolve,reject) => {
 				this.rollDice(() => {
+					this.highlightDice(this.diceList)
 					const results = this.getDiceResults()
 	
 					// setting up a couple of ways to consume the final results
@@ -1123,9 +1322,11 @@ class DiceBox {
 		this.rolling = true;
 		this.running = Date.now();
 		this.iteration = 0
+		this.endPop()
 		return new Promise((resolve,reject) => {
 			diceIdArray.forEach(dieId => {
 				const dicemesh = this.diceList[dieId]
+				this.DiceFactory.unglow(dicemesh)
 				dicemesh.rerolls += 1;
 				dicemesh.rerolling = true;
 				dicemesh.body.wakeUp();
@@ -1134,6 +1335,7 @@ class DiceBox {
 				dicemesh.body.velocity = new CANNON.Vec3(0, 0, 3000);
 			})
 			this.animateThrow(this.running, () => {
+				this.highlightDice(diceIdArray.map(dieId => this.diceList[dieId]))
 				const results = diceIdArray.map(dieId => this.getDiceResults(dieId))
 
 				this.onRerollComplete(results)
@@ -1153,6 +1355,7 @@ class DiceBox {
 
 		// keep the dice on the table if a fade-out was under way
 		++this.clearToken
+		this.endPop()
 		this.renderer.domElement.style.transition = ''
 		this.renderer.domElement.style.opacity = ''
 
@@ -1195,6 +1398,7 @@ class DiceBox {
 
 		return new Promise((resolve,reject) => {
 			const callback = () => {
+				this.highlightDice(diceIdArray.map(dieId => this.diceList[dieId]))
 				const results = diceIdArray.map(dieId => this.getDiceResults(dieId))
 	
 				// setting up a couple of ways to consume the dice added results

@@ -4,17 +4,25 @@ export const MATERIALTYPES = {
   },
   'perfectmetal': {
     name: 'Perfect Metal',
-    color: 0xdddddd,
-    roughness: 0,
+    color: 0xffffff,
+    roughness: 0.04,
     metalness: 1,
-    envMapIntensity: 1
+    envMapIntensity: 1.2
   },
   'metal': {
     name: 'Metal',
-    color: 0xdddddd,
-    roughness: 0.5,
-    metalness: 0.6,
-    envMapIntensity: 0.7
+    color: 0xffffff,
+    roughness: 0.2,
+    metalness: 1,
+    envMapIntensity: 1.3
+  },
+  'brushedmetal': {
+    name: 'Brushed Metal',
+    color: 0xffffff,
+    roughness: 0.38,
+    metalness: 1,
+    anisotropy: 0.8,
+    envMapIntensity: 1.4
   },
   'wood': {
     name: 'Wood',

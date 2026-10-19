@@ -17,9 +17,13 @@ const defaultConfig = {
 // body instead of fading with the body's alpha, and a pixel is as opaque as its brightest
 // reflection, so highlights stay solid over a page behind a transparent canvas. Glass scatters
 // little light, so the environment only reflects; faces get more opaque towards grazing angles,
-// and the painted numbers are matte so reflections don't wash them out.
-function glassShader(shader) {
+// and the painted numbers are matte so reflections don't wash them out. With GLASS_REFRACTION the
+// body also shows the environment bent through it (x: ior, y: strength, z: dispersion), tinted
+// by the glass colour.
+function glassShader(shader, refraction) {
+	shader.uniforms.glassRefraction = refraction;
 	shader.fragmentShader = shader.fragmentShader
+		.replace('void main() {', 'uniform vec3 glassRefraction;\nvoid main() {')
 		.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''))
 		.replace('#include <opaque_fragment>', `
 			float glassPaint = smoothstep( 0.9, 1.0, diffuseColor.a );
@@ -29,11 +33,46 @@ function glassShader(shader) {
 				glassSpecular = glassSpecular * ( 1.0 - material.clearcoat * Fcc ) + ( clearcoatSpecularDirect + clearcoatSpecularIndirect ) * material.clearcoat;
 			#endif
 			vec3 glassBody = outgoingLight - glassSpecular;
+			#if defined( GLASS_REFRACTION ) && defined( ENVMAP_TYPE_CUBE_UV )
+				vec3 glassTint = diffuseColor.rgb / max( max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) ), 0.0001 );
+				vec3 glassDir = inverseTransformDirection( refract( - geometryViewDir, geometryNormal, 1.0 / glassRefraction.x ), viewMatrix );
+				vec3 glassSeen = textureCubeUV( envMap, envMapRotation * glassDir, 0.12 ).rgb;
+				if ( glassRefraction.z > 0.0 ) {
+					glassDir = inverseTransformDirection( refract( - geometryViewDir, geometryNormal, 1.0 / ( glassRefraction.x - glassRefraction.z ) ), viewMatrix );
+					glassSeen.r = textureCubeUV( envMap, envMapRotation * glassDir, 0.12 ).r;
+					glassDir = inverseTransformDirection( refract( - geometryViewDir, geometryNormal, 1.0 / ( glassRefraction.x + glassRefraction.z ) ), viewMatrix );
+					glassSeen.b = textureCubeUV( envMap, envMapRotation * glassDir, 0.12 ).b;
+				}
+				glassBody += glassTint * glassSeen * glassRefraction.y * envMapIntensity * ( 1.0 - glassPaint );
+			#endif
 			glassSpecular *= 1.0 - 0.8 * glassPaint;
 			float glassAlpha = diffuseColor.a + ( 1.0 - diffuseColor.a ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
 			gl_FragColor = vec4( ( glassBody * diffuseColor.a + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
 		`);
 }
+
+// Metal reflects the environment tinted by the body colour, so a dark body still reads as metal
+// (dark brown becomes copper, black becomes gunmetal) by lifting its brightest channel to
+// METAL_FLOOR. The label's bump canvas doubles as a paint mask: where the numbers are drawn
+// (black) the surface is matte non-metallic paint, so they stay readable against reflections.
+const METAL_FLOOR = 0.42;
+function metalShader(shader) {
+	shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', `
+		float metalnessFactor = metalness;
+		float metalPaint = 0.0;
+		#ifdef USE_METALNESSMAP
+			vec4 texelMetalness = texture2D( metalnessMap, vMetalnessMapUv );
+			metalPaint = 1.0 - smoothstep( 0.03, 0.15, dot( texelMetalness.rgb, vec3( 0.3333 ) ) );
+		#endif
+		float metalPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
+		vec3 metalTint = metalPeak < 0.001 ? vec3( ${METAL_FLOOR.toFixed(3)} ) : diffuseColor.rgb * ( max( metalPeak, ${METAL_FLOOR.toFixed(3)} ) / metalPeak );
+		diffuseColor.rgb = mix( metalTint, diffuseColor.rgb, metalPaint );
+		metalnessFactor *= 1.0 - metalPaint;
+		roughnessFactor = mix( roughnessFactor, 0.55, metalPaint );
+	`);
+}
+
+export const isMetal = material => /metal/.test(material || '');
 
 class DiceFactory {
 	static dice = {}
@@ -54,6 +93,10 @@ class DiceFactory {
 		this.dice_material = '';
 		this.body_opacity = 1;
 		this.envMap = null;
+		this.envRotation = new THREE.Euler();
+		this.envIntensity = 1;
+		this.refraction = { value: new THREE.Vector3(1.5, 0, 0) };
+		this.glow_cache = new Map();
 
 		this.material_options = {
 			specular: 0x777777,
@@ -89,9 +132,114 @@ class DiceFactory {
 			if (mat.bumpMap && mat.bumpMap.isNormalImage) mat.bumpMap.dispose();
 			mat.dispose();
 		});
+		this.glow_cache.forEach(mat => {
+			if (mat.emissiveMap) mat.emissiveMap.dispose();
+			mat.dispose();
+		});
 		this.geometries = {};
 		this.materials_cache = {};
 		this.mesh_materials_cache = new Map();
+		this.glow_cache = new Map();
+	}
+
+	cachedMaterials() {
+		return [...this.mesh_materials_cache.values(), ...this.glow_cache.values()];
+	}
+
+	// Points every cached metal and glass material at a new environment.
+	setEnvironment(envMap, rotation, intensity) {
+		this.envMap = envMap;
+		this.envRotation.copy(rotation);
+		this.envIntensity = intensity;
+		this.cachedMaterials().forEach(mat => this.applyEnvironment(mat));
+	}
+
+	applyEnvironment(mat) {
+		if (mat.envBase === undefined) return;
+		mat.envMap = this.envMap;
+		mat.envMapRotation.copy(this.envRotation);
+		mat.envMapIntensity = mat.envBase * this.envIntensity;
+	}
+
+	// glass_refraction: false | true | { ior, strength, dispersion }
+	setRefraction(options) {
+		const on = Boolean(options);
+		const o = typeof options === 'object' && options ? options : {};
+		this.refraction.value.set(o.ior ?? 1.5, on ? (o.strength ?? 0.6) : 0, o.dispersion === true ? 0.02 : (o.dispersion || 0));
+		this.cachedMaterials().forEach(mat => {
+			if (!mat.isGlass || ('GLASS_REFRACTION' in mat.defines) === on) return;
+			if (on) mat.defines.GLASS_REFRACTION = '';
+			else delete mat.defines.GLASS_REFRACTION;
+			mat.needsUpdate = true;
+		});
+	}
+
+	// Which face group points up (down for a d4, which reads the face it rests on).
+	topFace(mesh) {
+		const vector = new THREE.Vector3(0, 0, mesh.shape == 'd4' ? -1 : 1);
+		const normal = new THREE.Vector3();
+		const normals = mesh.geometry.getAttribute('normal').array;
+		let closest_face, closest_angle = Math.PI * 2;
+		for (let i = 0, l = mesh.geometry.groups.length; i < l; ++i) {
+			const face = mesh.geometry.groups[i];
+			if (face.materialIndex == 0) continue;
+			// each group is one triangle: 3 vertices of 3 floats
+			normal.fromArray(normals, i * 9);
+			const angle = normal.applyQuaternion(mesh.body ? mesh.body.quaternion : mesh.quaternion).angleTo(vector);
+			if (angle < closest_angle) {
+				closest_angle = angle;
+				closest_face = face;
+			}
+		}
+		return closest_face;
+	}
+
+	// Makes the result on a settled die glow: the label material on the face that landed up (on a
+	// d4, the three faces showing the result at their top corner) is swapped for a cached variant
+	// that emits a soft halo in the number colour. Only the drawn materials change; the face map
+	// and so the reported result stay as they were.
+	glowResult(mesh, intensity = 1) {
+		if (!mesh.baseMaterial) mesh.baseMaterial = mesh.material;
+		const materials = mesh.baseMaterial.slice();
+		const top = this.topFace(mesh).materialIndex;
+		if (mesh.shape == 'd4') {
+			const text = String(mesh.getFaceValue().value);
+			materials.forEach((mat, i) => {
+				if (i > 1 && i != top) materials[i] = this.glowMaterial(mat, text, intensity);
+			});
+		} else {
+			materials[top] = this.glowMaterial(materials[top], null, intensity);
+		}
+		mesh.material = materials;
+	}
+
+	unglow(mesh) {
+		if (!mesh.baseMaterial) return;
+		mesh.material = mesh.baseMaterial;
+		mesh.baseMaterial = null;
+	}
+
+	glowMaterial(base, text, intensity) {
+		const info = base && base.diceLabel;
+		if (!info) return base;
+		if (text !== null && !info.labels[info.index].includes(text)) return base;
+		const key = `${base.uuid}|${text}|${intensity}`;
+		let mat = this.glow_cache.get(key);
+		if (mat) return mat;
+		mat = base.clone();
+		mat.defines = { ...base.defines };
+		mat.onBeforeCompile = base.onBeforeCompile;
+		mat.isGlass = base.isGlass;
+		mat.envBase = base.envBase;
+		mat.emissive = new THREE.Color(0xffffff);
+		mat.emissiveIntensity = intensity;
+		// a dark number gets a light halo behind it instead of glowing itself
+		const hsl = new THREE.Color(info.forecolor).getHSL({}, THREE.SRGBColorSpace);
+		const dark = hsl.l < 0.45;
+		const color = dark ? `hsl(${Math.round(hsl.h * 360)}, ${Math.round(Math.min(hsl.s, 0.7) * 100)}%, 80%)` : info.forecolor;
+		mat.emissiveMap = this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, color, 'none', '#000000', false, { text, knockout: dark }).composite;
+		this.glow_cache.set(key, mat);
+		return mat;
 	}
 
 	// returns a dicemesh (THREE.Mesh) object
@@ -119,26 +267,11 @@ class DiceFactory {
 		dicemesh.resultReason = 'natural';
 		dicemesh.mass = diceobj.mass
 
+		const factory = this;
 		dicemesh.getFaceValue = function() {
 			// callback function. scope of this = Mesh
 			let reason = this.resultReason;
-			let vector = new THREE.Vector3(0, 0, this.shape == 'd4' ? -1 : 1);
-
-			let closest_face, closest_angle = Math.PI * 2;
-			let normals = this.geometry.getAttribute('normal').array;
-			for (let i = 0, l = this.geometry.groups.length; i < l; ++i) {
-				let face = this.geometry.groups[i];
-				if (face.materialIndex == 0) continue;
-
-				//Each group consists in 3 vertices of 3 elements (x, y, z) so the offset between faces in the Float32BufferAttribute is 9
-				let startVertex = i * 9;
-				let normal = new THREE.Vector3(normals[startVertex], normals[startVertex + 1], normals[startVertex + 2]);
-				let angle = normal.clone().applyQuaternion(this.body.quaternion).angleTo(vector);
-				if (angle < closest_angle) {
-					closest_angle = angle;
-					closest_face = face;
-				}
-			}
+			let closest_face = factory.topFace(this);
 			let matindex = (this.faceMap ? this.faceMap[closest_face.materialIndex] : closest_face.materialIndex) - 1;
 			let offset = 2
 
@@ -252,12 +385,15 @@ class DiceFactory {
 				materials.push(mat);
 				continue;
 			}
+			const preset = MATERIALTYPES[this.dice_material];
 			if (this.dice_material == 'glass') {
-				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(MATERIALTYPES.glass));
-				mat.envMap = this.envMap;
-			} else if (this.dice_material != 'none') {
-				mat = new THREE.MeshStandardMaterial(MATERIALTYPES[this.dice_material]);
-				if (mat.envMapIntensity) mat.envMap = this.envMap;
+				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset));
+				mat.isGlass = true;
+				if (this.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';
+			} else if (preset && preset.anisotropy) {
+				mat = new THREE.MeshPhysicalMaterial(preset);
+			} else if (preset) {
+				mat = new THREE.MeshStandardMaterial(preset);
 			} else {
 				mat = new THREE.MeshPhongMaterial(this.material_options);
 			}
@@ -272,10 +408,16 @@ class DiceFactory {
 				mat.map = canvasTextures.composite;
 				// flat bevels would light up end to end like wires
 				if (this.dice_material == 'glass') mat.envMapIntensity = 0.4;
+				if (isMetal(this.dice_material)) mat.onBeforeCompile = metalShader;
 
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
+				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand };
+				if (isMetal(this.dice_material)) {
+					mat.onBeforeCompile = metalShader;
+					mat.metalnessMap = canvasTextures.bump;
+				}
 
 				if (this.bumpMapping && this.dice_material != 'glass') {
 					if (false) {
@@ -302,6 +444,10 @@ class DiceFactory {
 					}
 				}
 			}
+			if (preset && preset.envMapIntensity) {
+				mat.envBase = mat.envMapIntensity;
+				this.applyEnvironment(mat);
+			}
 			mat.opacity = 1;
 			mat.transparent = true;
 			mat.depthTest = false;
@@ -315,7 +461,7 @@ class DiceFactory {
 
 	makeGlass(mat) {
 		mat.premultipliedAlpha = true;
-		mat.onBeforeCompile = glassShader;
+		mat.onBeforeCompile = shader => glassShader(shader, this.refraction);
 		return mat;
 	}
 
@@ -381,8 +527,11 @@ class DiceFactory {
 		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor + opacity;
 	}
 
-	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache) {
+	// With glow ({text}: only that number on a d4, or null for the face's label) it draws just the
+	// numbers, haloed in their colour on black, for use as an emissive map.
+	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache, glow = null) {
 		if (labels[index] === undefined) return null;
+		if (glow) texture = { name: 'none' };
 
 		texture = texture || this.dice_texture_rand;
 		forecolor = forecolor || this.label_color_rand;
@@ -429,7 +578,7 @@ class DiceFactory {
 		contextBump.scale(px / ts, px / ts);
 
 		// create color; a texture drawn with destination-in brings its own transparency
-		context.globalAlpha = texture.composite == 'destination-in' ? 1 : this.body_opacity;
+		context.globalAlpha = texture.composite == 'destination-in' || glow ? 1 : this.body_opacity;
 		context.fillStyle = backcolor;
 		context.fillRect(0, 0, ts, ts);
 		context.globalAlpha = 1;
@@ -458,6 +607,12 @@ class DiceFactory {
 
 		contextBump.textAlign = "center";
 		contextBump.textBaseline = "middle";
+
+		if (glow) {
+			context.shadowColor = forecolor;
+			context.shadowBlur = ts * 0.035 * (px / ts);
+		}
+		const outlined = outlinecolor !== false && outlinecolor != 'none' && outlinecolor != backcolor;
 
 		if (diceobj.shape != 'd4') {
 
@@ -537,7 +692,7 @@ class DiceFactory {
 					let textline = textlines[i].trim();
 
 					// attempt to outline the text with a meaningful color
-					if (outlinecolor != 'none' && outlinecolor != backcolor) {
+					if (outlined) {
 						context.strokeStyle = outlinecolor;
 						context.lineWidth = 5;
 						context.strokeText(textlines[i], textstartx, textstarty);
@@ -554,6 +709,7 @@ class DiceFactory {
 
 					context.fillStyle = forecolor;
 					context.fillText(textlines[i], textstartx, textstarty);
+					if (glow) this.finishGlow(context, glow, textlines[i], textstartx, textstarty);
 
 					contextBump.fillStyle = "#000000";
 					contextBump.fillText(textlines[i], textstartx, textstarty);
@@ -579,9 +735,9 @@ class DiceFactory {
 				if (text[i] instanceof HTMLImageElement) {
 					let scaleTexture = text[i].width / ts;
 					context.drawImage(text[i], 0, 0, text[i].width, text[i].height, (100/scaleTexture), (25/scaleTexture), (60/scaleTexture), (60/scaleTexture));
-				} else {
+				} else if (!glow || glow.text == text[i]) {
 					// attempt to outline the text with a meaningful color
-					if (outlinecolor != 'none' && outlinecolor != backcolor) {
+					if (outlined) {
 						context.strokeStyle = outlinecolor;
 						context.lineWidth = 5;
 						context.strokeText(text[i], hw, hh - ts * 0.3);
@@ -594,6 +750,7 @@ class DiceFactory {
 					//draw label in top middle section
 					context.fillStyle = forecolor;
 					context.fillText(text[i], hw, hh - ts * 0.3);
+					if (glow) this.finishGlow(context, glow, text[i], hw, hh - ts * 0.3);
 
 					contextBump.fillStyle = "#000000";
 					contextBump.fillText(text[i], hw, hh - ts * 0.3);
@@ -617,6 +774,7 @@ class DiceFactory {
 		var compositetexture = new THREE.CanvasTexture(canvas);
 		compositetexture.colorSpace = THREE.SRGBColorSpace;
 		var bumpMap;
+		if (glow) return {composite:compositetexture};
 		if (!isTexture) {
 			bumpMap = new THREE.CanvasTexture(canvasBump);
 		} else {
@@ -631,6 +789,17 @@ class DiceFactory {
 		}
 
 		return {composite:compositetexture,bump:bumpMap};
+	}
+
+	// Doubles the halo, and with knockout leaves the number itself unlit.
+	finishGlow(context, glow, text, x, y) {
+		context.fillText(text, x, y);
+		if (!glow.knockout) return;
+		context.save();
+		context.shadowBlur = 0;
+		context.fillStyle = '#000000';
+		context.fillText(text, x, y);
+		context.restore();
 	}
 
 	applyColorSet(colordata) {
