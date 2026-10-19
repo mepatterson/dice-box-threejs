@@ -28,6 +28,7 @@ const defaultConfig = {
 	strength: 1,
 	iterationLimit: 1000,
 	maxPixelRatio: 2,
+	rollingPixelRatio: null,
 	textureScale: 0.5,
 	preloadDice: null,
 	onRollComplete: () => {},
@@ -266,7 +267,15 @@ class DiceBox {
 	}
 
 	pixelRatio() {
-		return Math.min(window.devicePixelRatio || 1, this.maxPixelRatio || Infinity)
+		const ratio = Math.min(window.devicePixelRatio || 1, this.maxPixelRatio || Infinity)
+		return this.rolling && this.rollingPixelRatio ? Math.min(ratio, this.rollingPixelRatio) : ratio
+	}
+
+	// With rollingPixelRatio set, moving dice render at that lower ratio and the settled dice
+	// get one sharp frame at the full ratio.
+	applyPixelRatio() {
+		const ratio = this.pixelRatio()
+		if (this.renderer.getPixelRatio() !== ratio) this.renderer.setPixelRatio(ratio)
 	}
 
 	async loadTheme(themeConfig){
@@ -866,6 +875,8 @@ class DiceBox {
 			++this.steps;
 		}
 
+		this.applyPixelRatio();
+
 		// update physics interactions visually
 		for (let i = 0, l = this.diceList.length; i < l; i++) {
 			const dicemesh = this.diceList[i];
@@ -883,6 +894,7 @@ class DiceBox {
 			this.running = false;
 			this.rolling = false;
 			if (this.pendingWorldBox) this.makeWorldBox();
+			this.applyPixelRatio();
 			if(callback) callback.call(this, this.notationVectors);
 			
 			this.running = Date.now();
