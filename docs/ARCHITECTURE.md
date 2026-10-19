@@ -85,10 +85,39 @@ and `remove` act on existing dice by id.
   shows through instead of fading with the alpha, makes a pixel as opaque as its brightest
   reflection (so highlights hold over the page), drops the environment's diffuse light, makes
   faces more opaque at grazing angles and keeps the labels matte. Glass shadows are lighter.
-- **Environment** (`DiceBox.makeEnvironment`): a PMREM of a small dark studio (a low band of
-  light and a few soft panels), built once when a colorset first needs it and freed in
-  `dispose()`. Materials whose preset has an `envMapIntensity` (metal, glass) reflect it;
-  plastic and wood don't sample it.
+- **Environment** (`DiceBox.makeEnvironment`): a PMREM built once, when a colorset first needs
+  it, and freed in `dispose()`. The default (`makeStudio`) is a small dark studio (a low band of
+  light and a few soft panels). With `environment: {url}` it is an equirectangular photo instead:
+  `.hdr` goes through `HDRLoader`; an LDR image is drawn to a canvas and turned into a half-float
+  texture with its near-white pixels scaled up (`HIGHLIGHT_GAIN`), so lamps and windows act as light
+  sources. Photos are y-up, so their materials get an `envMapRotation` that stands them up in this
+  z-up scene, plus the option's azimuth. A failed load falls back to the studio. It is never the
+  scene background. Materials whose preset has an `envMapIntensity` (metal, glass) reflect it and
+  remember that preset value (`envBase`); `setEnvironment` builds the new PMREM, points every cached
+  material at it (`DiceFactory.setEnvironment`), frees the old one and renders once. Plastic and
+  wood don't sample it.
+- **Metal** (`metalShader`, an `onBeforeCompile` patch on `metal`, `perfectmetal` and
+  `brushedmetal`): fully metallic, so the body colour is the reflection tint; a dark body has its
+  brightest channel lifted to `METAL_FLOOR` (dark brown reads as copper, black as gunmetal). The
+  label's bump canvas (white with black numbers) is also its `metalnessMap`, which the patch reads
+  as a paint mask: numbers are matte and non-metallic. `brushedmetal` is a `MeshPhysicalMaterial`
+  with anisotropy.
+- **Glass refraction** (`glass_refraction`, off by default): `glassShader` also samples the
+  environment along the refracted view direction (three samples, one IOR per channel when
+  `dispersion` is set) and adds it, tinted by the normalised glass colour, to the body under the
+  labels. One shared uniform holds IOR, strength and dispersion; turning it on or off toggles a
+  define on the cached glass materials.
+- **Result highlight** (`highlightResult`): when a throw, `add()` or `reroll()` finishes,
+  `highlightDice` swaps the label material on the face that landed up (`DiceFactory.topFace`, the
+  same lookup `getFaceValue` uses; on a d4 the three faces showing the result) for a variant with an
+  emissive map of just the number haloed in its colour, cached per material in `glow_cache` and
+  freed in `dispose()`. The mesh keeps its unlit array in `baseMaterial`, restored before a reroll.
+  The pop scales the meshes (lifted so they stay on the table) on its own short `requestAnimationFrame`
+  loop; the bodies are kinematic and untouched, a new throw ends it, and nothing renders after it.
+- **Throw direction** (`throwFrom`): `"any"` keeps the original random vector. `"sides"` (or
+  `"left"`/`"right"`) spawns each die just inside one side wall in the middle 60% of its height and
+  sends it mostly sideways (|vy| at most 0.35 |vx|) at a speed from the box width and gravity, so it
+  crosses the box on any screen size. Both paths only use `Math.random`, so seeded runs repeat.
 - Nothing is created per die except the mesh (and a glass die's interior mesh), its material
   array and its cannon body, so
   `clearDice` has nothing to free; `dispose()` frees the caches and the renderer.

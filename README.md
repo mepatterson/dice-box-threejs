@@ -38,6 +38,10 @@ const defaultConfig = {
 	rollingPixelRatio: null, // e.g. 1 to render moving dice at 1x and the settled dice at full ratio
 	textureScale: 0.5, // label texture resolution relative to the original 512px faces
 	glass_opacity: 0.35, // how much of what's behind a glass die its body hides, 0 to 1
+	glass_refraction: false, // experimental: true | { ior: 1.5, strength: 0.6, dispersion: 0.02 }
+	environment: "studio", // or a URL, or { url, intensity: 1, rotation: 0 }; what metal and glass reflect
+	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
+	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	onRollComplete: () => {}
 }
@@ -55,6 +59,52 @@ theme_customColorset: { name: "amber", foreground: "#F2743B", background: "#3A24
 ```
 Metal and glass reflect a small studio environment the box generates once, the first time a
 colorset needs it.
+
+### Reflection environment
+`environment` swaps the studio for a photo of a room, used only for reflections (and glass
+refraction). It is never drawn as a background, so the canvas stays transparent:
+```
+environment: { url: "/img/room.jpg", intensity: 1, rotation: 0 }
+```
+- `url`: an equirectangular (2:1) panorama. JPEG or WebP is best for the web (a 1024x512 JPEG is
+  about 30 to 80 KB); a `.hdr` also works but is much larger (about 1.5 MB at 1k). An LDR photo's
+  near-white areas (lamps, windows) are stretched brighter so they light the dice like an HDR would.
+- `intensity` scales the reflections, `rotation` spins the room around the vertical axis (radians).
+- The image loads once, when a metal or glass colorset first needs it; `initialize()` (and
+  `updateConfig()`) wait for it, so the first dice already reflect the room. If it fails to load the
+  box falls back to the studio and logs a warning.
+- Swap it at runtime, for example when a page toggles between a dark and a light theme:
+  `await box.setEnvironment({ url: "/img/day.jpg" })` or `await box.updateConfig({ environment: "studio" })`.
+  The cached materials switch over, the old environment is freed and the dice are drawn once.
+
+### Metal
+`metal` is polished (low roughness, fully metallic), `perfectmetal` is a mirror and `brushedmetal`
+is satin with a directional sheen. The body colour tints the metal: a gold or silver background gives
+gold or silver, dark brown gives copper and black gives gunmetal. Numbers are painted on as matte,
+non-metallic enamel so they stay readable against the reflections.
+
+### Glass refraction (experimental)
+`glass_refraction: true` (or `{ ior, strength, dispersion }`) makes glass bodies also show the
+environment bent through them, tinted by the glass colour; `dispersion` splits the colours slightly.
+It can be switched with `updateConfig({ glass_refraction })`. Flat facets each refract one direction,
+so the effect reads as faceted colour shifts rather than a clear picture of the room.
+
+### Result highlight
+`highlightResult: true` makes the result stand out when a throw (or an `add()` or `reroll()`)
+finishes: the number on the face that landed up glows in its own colour (a dark number gets a light
+halo behind it) and the die pops, a quick 12% scale-up and settle over 350 ms. `{ glow: false }` or
+`{ pop: false }` turns either off; a number for `glow` sets its strength (default 1). Only how the dice
+are drawn changes, never which face is up or the results, and nothing renders once the pop ends.
+
+### Labels
+A colorset's `outline` draws an outline round the numbers in that colour; `outline: "none"` (or
+`false`) leaves it off.
+
+### Throw direction
+`throwFrom: "any"` throws in a random direction from the edge opposite it. `"sides"` picks the left or
+right wall at random for each throw: the dice come in from just inside it, somewhere in the middle of
+its height, and travel mostly sideways fast enough to cross the box, bounce off the far wall and settle
+near the middle. `"left"` and `"right"` always use that side.
 
 ## Getting Results
 ### There are three ways to get results
