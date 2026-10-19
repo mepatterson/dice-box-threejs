@@ -138,7 +138,13 @@ and `remove` act on existing dice by id.
   emissive map of just the number haloed in its colour, cached per material in `glow_cache` and
   freed in `dispose()`, and adds a `Sprite` child just above the up face (on a d4, over the top
   corner): additive, with one shared radial-gradient texture and a material per colour
-  (`halo_cache`), so it is one extra draw per die and costs no per-die GPU memory. The mesh keeps its
+  (`halo_cache`), so it is one extra draw per die and costs no per-die GPU memory. With `style` ink or
+  gilded (auto picks ink when `glowColor` finds the number dark) the variant also gets the label redrawn
+  with the number in the fill colour (not on a d4, where the emissive number alone recolours it), the
+  emissive map is drawn in that colour, and the halo is a normally blended tint, since an additive one
+  vanishes on a light body. Gilded adds `gildMaterial`, an `onBeforeCompile` patch that brightens a
+  diagonal band of the emissive map at `gild_sweep`, one uniform shared by every gilded material; the pop
+  loop runs it across once (`SWEEP_MS`) and parks it. Their redrawn labels are freed with the cache. The mesh keeps its
   unlit array in `baseMaterial`, restored (and the sprite removed) before a reroll.
   The pop scales the meshes (lifted so they stay on the table) on its own short `requestAnimationFrame`
   loop; the bodies are kinematic and untouched, a new throw ends it, and nothing renders after it.

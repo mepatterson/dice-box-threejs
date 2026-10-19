@@ -181,6 +181,7 @@ class DiceFactory {
 		this.surfaces = new Map();
 		this.surface_tints = new Map();
 		this.dice_accent = '';
+		this.gild_sweep = { value: 2 };
 
 		this.material_options = {
 			specular: 0x777777,
@@ -218,6 +219,7 @@ class DiceFactory {
 		});
 		this.glow_cache.forEach(mat => {
 			if (mat.emissiveMap) mat.emissiveMap.dispose();
+			(mat.ownTextures || []).forEach(texture => texture && texture.dispose());
 			mat.dispose();
 		});
 		this.variant_cache.forEach(mat => {
@@ -294,22 +296,30 @@ class DiceFactory {
 	// d4, the three faces showing the result at their top corner) is swapped for a cached variant
 	// that emits a soft halo in the number colour, and a small additive glow sprite sits just above
 	// the number. Only what is drawn changes; the face map and so the reported result stay as they were.
-	glowResult(mesh, intensity = 1) {
+	// style: "glow" lights the number in its own colour; "ink" repaints a dark number in a bright
+	// colour (`color`, the colorset's `highlight`, or ember) that glows; "gilded" repaints it in gold
+	// with a shimmer that sweeps across once (`gild_sweep`, driven by the box). "auto" picks ink for dark
+	// numbers and glow for the rest. Returns the style used.
+	glowResult(mesh, intensity = 1, style = 'auto', color = null) {
 		this.unglow(mesh);
+		const top = this.topFace(mesh).materialIndex;
+		const info = mesh.material[mesh.shape == 'd4' ? 2 : top].diceLabel;
+		if (style == 'auto') style = info && this.glowColor(info.forecolor).dark ? 'ink' : 'glow';
+		const fill = style == 'glow' || !info ? null : color || info.highlight || (style == 'gilded' ? '#B8892E' : '#F2743B');
+		const look = { intensity, style, fill };
 		mesh.baseMaterial = mesh.material;
 		const materials = mesh.baseMaterial.slice();
-		const top = this.topFace(mesh).materialIndex;
 		if (mesh.shape == 'd4') {
 			const text = String(mesh.getFaceValue().value);
 			materials.forEach((mat, i) => {
-				if (i > 1 && i != top) materials[i] = this.glowMaterial(mat, text, intensity);
+				if (i > 1 && i != top) materials[i] = this.glowMaterial(mat, text, look);
 			});
 		} else {
-			materials[top] = this.glowMaterial(materials[top], null, intensity);
+			materials[top] = this.glowMaterial(materials[top], null, look);
 		}
 		mesh.material = materials;
-		const info = mesh.baseMaterial[mesh.shape == 'd4' ? 2 : top].diceLabel;
-		if (info) this.addHalo(mesh, this.glowColor(info.forecolor).color, intensity);
+		if (info) this.addHalo(mesh, fill || this.glowColor(info.forecolor).color, intensity, style);
+		return style;
 	}
 
 	// A dropped die: every face dimmed and desaturated and the number that landed up struck through.
@@ -358,12 +368,14 @@ class DiceFactory {
 
 	// The halo sits just above the up face (on a d4, over the top corner) as a child of the mesh, so
 	// it pops with the die and goes when the die does.
-	addHalo(mesh, color, intensity) {
+	// An additive glow vanishes on a light body, so the ink and gilded halos are a soft tint instead.
+	addHalo(mesh, color, intensity, style = 'glow') {
 		if (!this.halo_texture) this.halo_texture = haloTexture();
-		const key = `${color}|${intensity}`;
+		const tinted = style != 'glow';
+		const key = `${color}|${intensity}|${tinted}`;
 		let mat = this.halo_cache.get(key);
 		if (!mat) {
-			mat = new THREE.SpriteMaterial({ map: this.halo_texture, color: new THREE.Color(color), blending: THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false, opacity: Math.min(1, 0.55 * intensity) });
+			mat = new THREE.SpriteMaterial({ map: this.halo_texture, color: new THREE.Color(color), blending: tinted ? THREE.NormalBlending : THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false, opacity: Math.min(1, (tinted ? 0.3 : 0.55) * intensity) });
 			this.halo_cache.set(key, mat);
 		}
 		const radius = mesh.geometry.boundingSphere.radius;
@@ -405,8 +417,8 @@ class DiceFactory {
 		this.body_opacity = info.opacity;
 		this.dice_accent = info.accent;
 		try {
-			return variant.strike
-				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant)
+			return variant.strike || variant.recolor
+				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant.strike ? variant : null)
 				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
 		} finally {
 			[this.dice_material, this.body_opacity, this.dice_accent] = saved;
@@ -458,20 +470,50 @@ class DiceFactory {
 		return mat;
 	}
 
-	glowMaterial(base, text, intensity) {
+	glowMaterial(base, text, { intensity, style, fill }) {
 		const info = base && base.diceLabel;
 		if (!info) return base;
 		if (text !== null && !info.labels[info.index].includes(text)) return base;
-		const key = `${base.uuid}|${text}|${intensity}`;
+		const key = `${base.uuid}|${text}|${intensity}|${style}|${fill}`;
 		let mat = this.glow_cache.get(key);
 		if (mat) return mat;
 		mat = this.cloneMaterial(base);
 		mat.emissive = new THREE.Color(0xffffff);
 		mat.emissiveIntensity = intensity;
-		const { dark, color } = this.glowColor(info.forecolor);
-		mat.emissiveMap = this.drawLabel(info, color, { text, knockout: dark }).composite;
+		if (fill) {
+			// the whole label redrawn with the number in the fill colour; d4 faces repaint only the result
+			const { composite, bump } = text === null ? this.drawLabel(info, fill, { recolor: true }) : { composite: null, bump: null };
+			if (composite) {
+				mat.map = composite;
+				mat.ownTextures = [composite, bump];
+			}
+			mat.emissiveMap = this.drawLabel(info, fill, { text, knockout: false }).composite;
+			if (style == 'gilded') this.gildMaterial(mat, base);
+		} else {
+			const { dark, color } = this.glowColor(info.forecolor);
+			mat.emissiveMap = this.drawLabel(info, color, { text, knockout: dark }).composite;
+		}
 		this.glow_cache.set(key, mat);
 		return mat;
+	}
+
+	// The gilded number glows faintly, and brightly where a diagonal band crosses it as
+	// `gild_sweep` runs from -0.3 to 1.3; the box parks it at 2 once the sweep is done.
+	gildMaterial(mat, base) {
+		const compile = base.onBeforeCompile;
+		const sweep = this.gild_sweep;
+		mat.onBeforeCompile = (shader, renderer) => {
+			compile.call(mat, shader, renderer);
+			shader.uniforms.gildSweep = sweep;
+			shader.fragmentShader = shader.fragmentShader
+				.replace('void main() {', 'uniform float gildSweep;\nvoid main() {')
+				.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+					#ifdef USE_EMISSIVEMAP
+						float gildBand = ( vEmissiveMapUv.x + 1.0 - vEmissiveMapUv.y ) * 0.5 - gildSweep;
+						totalEmissiveRadiance *= 0.35 + 2.2 * exp( - gildBand * gildBand / 0.006 );
+					#endif`);
+		};
+		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|gild`;
 	}
 
 	// returns a dicemesh (THREE.Mesh) object
@@ -651,7 +693,7 @@ class DiceFactory {
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
-				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent };
+				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent, highlight: this.colordata && this.colordata.highlight };
 				if (isMetal(this.dice_material)) {
 					mat.onBeforeCompile = metalShader;
 					mat.metalnessMap = canvasTextures.bump;

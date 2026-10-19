@@ -58,6 +58,7 @@ const ENV_PANELS = [
 const HIGHLIGHT_GAIN = 6
 const POP_MS = 350
 const POP_SCALE = 0.12
+const SWEEP_MS = 800
 
 const smoothstep = (a, b, x) => {
 	const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
@@ -1143,23 +1144,26 @@ class DiceBox {
 		}
 	}
 
-	// highlightResult: true | { glow: true | number (emissive intensity), pop: true }
+	// highlightResult: true | { glow: true | number (emissive intensity), pop: true,
+	//   style: "auto" | "glow" | "ink" | "gilded", color: fill colour for ink and gilded }
 	highlightOptions() {
 		const option = this.highlightResult
 		if (!option) return { glow: 0, pop: false }
 		const glow = option === true || option.glow === undefined ? true : option.glow
 		const pop = option === true || option.pop === undefined ? true : option.pop
-		return { glow: glow === true ? 1 : Number(glow) || 0, pop: Boolean(pop) }
+		const style = ["glow", "ink", "gilded"].includes(option.style) ? option.style : "auto"
+		return { glow: glow === true ? 1 : Number(glow) || 0, pop: Boolean(pop), style, color: option.color || null }
 	}
 
 	// Dropped dice are struck through; the rest get the result highlight.
 	highlightDice(meshes) {
 		meshes = meshes.filter(mesh => mesh && mesh.parent)
 		meshes.forEach(mesh => { if (mesh.mark === "dropped") this.DiceFactory.dropResult(mesh) })
-		const { glow, pop } = this.highlightOptions()
+		const { glow, pop, style, color } = this.highlightOptions()
 		const kept = meshes.filter(mesh => mesh.mark !== "dropped")
-		if (glow) kept.forEach(mesh => this.DiceFactory.glowResult(mesh, glow))
-		if (pop) this.popDice(kept)
+		const styles = glow ? kept.map(mesh => this.DiceFactory.glowResult(mesh, glow, style, color)) : []
+		const sweep = styles.includes("gilded")
+		if (pop || sweep) this.popDice(pop ? kept : [], sweep)
 	}
 
 	// marks: [{ index, state: "kept" | "dropped" | null }], where index is the die's id in the
@@ -1175,7 +1179,7 @@ class DiceBox {
 			if (mesh.parent && mesh.body && mesh.body.type === CANNON.Body.KINEMATIC && !mesh.rerolling) settled.push(mesh)
 		}
 		if (!settled.length) return
-		const { glow } = this.highlightOptions()
+		const { glow, style, color } = this.highlightOptions()
 		for (const mesh of settled) {
 			if (mesh.mark === "dropped") {
 				if (this.popping.includes(mesh)) {
@@ -1184,7 +1188,7 @@ class DiceBox {
 				}
 				this.DiceFactory.dropResult(mesh)
 			} else if (glow) {
-				this.DiceFactory.glowResult(mesh, glow)
+				this.DiceFactory.glowResult(mesh, glow, style, color)
 			} else {
 				this.DiceFactory.unglow(mesh)
 			}
@@ -1194,19 +1198,24 @@ class DiceBox {
 
 	// A brief scale-up and settle on the render loop. Bodies are kinematic by now and only the
 	// meshes are scaled (and lifted so they stay on the table), so physics and results are untouched.
-	popDice(meshes) {
+	// With sweep it also runs the gilded shimmer across the numbers, once.
+	popDice(meshes, sweep = false) {
 		this.endPop()
 		const token = ++this.popToken
 		this.popping = meshes
 		const start = performance.now()
+		const gild = this.DiceFactory.gild_sweep
+		const duration = sweep ? Math.max(POP_MS, SWEEP_MS) : POP_MS
 		const frame = now => {
 			if (token !== this.popToken) return
-			const t = Math.min(1, (now - start) / POP_MS)
+			const elapsed = now - start
+			const t = Math.min(1, elapsed / POP_MS)
 			const rise = 0.3
 			const k = t < rise ? 1 - (1 - t / rise) ** 3 : 1 - smoothstep(0, 1, (t - rise) / (1 - rise))
 			this.scaleDice(this.popping, 1 + POP_SCALE * k)
+			if (sweep) gild.value = elapsed < SWEEP_MS ? -0.3 + 1.6 * elapsed / SWEEP_MS : 2
 			this.renderer.render(this.scene, this.camera)
-			if (t < 1) requestAnimationFrame(frame)
+			if (elapsed < duration) requestAnimationFrame(frame)
 			else this.popping = []
 		}
 		requestAnimationFrame(frame)
@@ -1221,6 +1230,7 @@ class DiceBox {
 
 	endPop() {
 		++this.popToken
+		this.DiceFactory.gild_sweep.value = 2
 		if (this.popping.length) this.scaleDice(this.popping, 1)
 		this.popping = []
 	}

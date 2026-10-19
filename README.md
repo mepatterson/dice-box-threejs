@@ -126,7 +126,20 @@ can be switched with `updateConfig({ glass_refraction })`.
 finishes: the number on the face that landed up glows in its own colour (a dark number gets a light
 halo behind it), a soft additive glow sits over it, and the die pops, a quick 12% scale-up and settle
 over 350 ms. `{ glow: false }` or
-`{ pop: false }` turns either off; a number for `glow` sets its strength (default 1). Only how the dice
+`{ pop: false }` turns either off; a number for `glow` sets its strength (default 1).
+
+A glow is lost on dark numbers (dark ink on ivory or wood), so `style` picks how the number lights up:
+- `"glow"`: the number glows in its own colour, as above (a dark number gets a light halo).
+- `"ink"`: the number is repainted in a bright colour that glows, with a soft tint behind it.
+- `"gilded"`: the number is repainted in antique gold and a shimmer sweeps across it once (800 ms).
+- `"auto"` (the default): `"ink"` for dark numbers, `"glow"` for the rest.
+
+`color` sets the ink or gold colour; otherwise a colorset's `highlight` key, then ember (`#F2743B`)
+for ink and `#B8892E` for gilded:
+```
+highlightResult: { style: "gilded", color: "#C9962F" }
+theme_customColorset: { name: "ivory", foreground: "#2B1D0E", background: "#E8DCC4", outline: "none", highlight: "#E0592A" }
+``` Only how the dice
 are drawn changes, never which face is up or the results, and nothing renders once the pop ends.
 
 ### Kept and dropped dice
