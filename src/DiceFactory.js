@@ -21,15 +21,19 @@ const defaultConfig = {
 // in the light passing through: the body shows the room bent through the die (refracted, then
 // bounced off the table, so it is lit from above), filtered by the glass colour over a path that
 // is short in the middle of the die and long at its rim, so the middle is clear and the rim deep.
-// Faces are treated as slightly domed for sharp glints from two key lights.
+// Faces are treated as slightly domed for small, capped glints from two key lights. Bevels are
+// thicker glass: deeper body colour, their grazing reflections tinted by it, with only the bright
+// ones left white; glassEdges (0 to 1) scales how much they stand out.
 // glassRefraction is x: ior, y: strength, z: dispersion. The painted numbers are matte.
-function glassShader(shader, refraction) {
+function glassShader(shader, refraction, edges) {
 	shader.uniforms.glassRefraction = refraction;
+	shader.uniforms.glassEdges = edges;
 	shader.vertexShader = shader.vertexShader
 		.replace('void main() {', 'varying vec3 vGlassOffset;\nvoid main() {')
 		.replace('#include <project_vertex>', '#include <project_vertex>\nvGlassOffset = mvPosition.xyz - ( modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;');
 	shader.fragmentShader = shader.fragmentShader
 		.replace('void main() {', `uniform vec3 glassRefraction;
+			uniform float glassEdges;
 			varying vec3 vGlassOffset;
 			vec3 glassSeen( vec3 dir ) {
 				#ifdef ENVMAP_TYPE_CUBE_UV
@@ -68,8 +72,9 @@ function glassShader(shader, refraction) {
 			vec3 glassBody = glassFilter * glassLight + glassPainted * 0.25;
 			glassBodyAlpha *= mix( 0.7, 1.45, glassDepth );
 			#ifdef GLASS_EDGE
-				glassBody = mix( glassFilter, vec3( 1.0 ), 0.3 ) * glassLight * 1.6;
-				glassBodyAlpha = mix( glassBodyAlpha, 1.0, 0.5 );
+				vec3 glassThick = pow( glassTint, vec3( 1.8 ) ) * pow( glassPeak, 0.6 );
+				glassBody = mix( glassThick, vec3( 1.0 ), 0.3 * glassEdges ) * glassLight * mix( 0.9, 1.6, glassEdges );
+				glassBodyAlpha = mix( glassBodyAlpha, 1.0, 0.15 + 0.35 * glassEdges );
 			#endif
 			#ifdef GLASS_INTERIOR
 				glassBody = glassFilter * glassLight * 0.6;
@@ -77,11 +82,16 @@ function glassShader(shader, refraction) {
 			glassBodyAlpha = saturate( glassBodyAlpha );
 			float glassShine = max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) );
 			glassSpecular *= smoothstep( 0.015, 0.2, glassShine ) * 1.4;
+			#ifdef GLASS_EDGE
+				vec3 glassEdgeTint = mix( vec3( 1.0 ), glassTint, 0.75 ) * pow( glassPeak, 0.25 );
+				float glassHot = smoothstep( 0.5, 1.4, glassShine );
+				glassSpecular *= mix( glassEdgeTint * mix( 0.3, 1.0, glassEdges ), vec3( mix( 0.55, 1.0, glassEdges ) ), glassHot );
+			#endif
 			#ifndef GLASS_INTERIOR
 				vec3 glassDome = normalize( geometryNormal + vec3( glassLens * 0.45, 0.0 ) );
-				float glassGlint = pow( saturate( dot( glassDome, normalize( vec3( - 0.35, 0.45, 0.82 ) + geometryViewDir ) ) ), 250.0 ) * 2.5;
-				glassGlint += pow( saturate( dot( glassDome, normalize( vec3( 0.55, - 0.25, 0.8 ) + geometryViewDir ) ) ), 250.0 ) * 1.2;
-				glassSpecular += glassGlint * ( 1.0 - glassPaint );
+				float glassGlint = pow( saturate( dot( glassDome, normalize( vec3( - 0.35, 0.45, 0.82 ) + geometryViewDir ) ) ), 1000.0 ) * 2.0;
+				glassGlint += pow( saturate( dot( glassDome, normalize( vec3( 0.55, - 0.25, 0.8 ) + geometryViewDir ) ) ), 1000.0 ) * 1.0;
+				glassSpecular += ( 1.0 - exp( - 2.0 * glassGlint ) ) * 1.1 * ( 1.0 - glassPaint );
 			#endif
 			vec3 glassColor = mix( glassBody, glassPainted, glassPaint );
 			float glassCover = mix( glassBodyAlpha, 1.0, glassPaint );
@@ -173,6 +183,7 @@ class DiceFactory {
 		this.envRotation = new THREE.Euler();
 		this.envIntensity = 1;
 		this.refraction = { value: new THREE.Vector3(1.5, 0, 0) };
+		this.edges = { value: 0.35 };
 		this.maxAnisotropy = 1;
 		this.glow_cache = new Map();
 		this.variant_cache = new Map();
@@ -270,6 +281,12 @@ class DiceFactory {
 			else delete mat.defines.GLASS_REFRACTION;
 			mat.needsUpdate = true;
 		});
+	}
+
+	// glass_edges: 0 to 1, how much glass bevels stand out
+	setGlassEdges(amount) {
+		const n = Number(amount);
+		this.edges.value = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.35;
 	}
 
 	// Which face group points up (down for a d4, which reads the face it rests on).
@@ -743,7 +760,7 @@ class DiceFactory {
 	makeGlass(mat, opacity) {
 		mat.premultipliedAlpha = true;
 		mat.defines = { ...mat.defines, GLASS_OPACITY: opacity.toFixed(3) };
-		mat.onBeforeCompile = shader => glassShader(shader, this.refraction);
+		mat.onBeforeCompile = shader => glassShader(shader, this.refraction, this.edges);
 		return mat;
 	}
 

@@ -39,6 +39,7 @@ const defaultConfig = {
 	textureScale: 0.5, // label texture resolution relative to the original 512px faces (metal always uses full resolution)
 	glass_opacity: 0.35, // how much of what's behind a glass die its body hides, 0 to 1
 	glass_refraction: true, // false | { ior: 1.5, strength: 1, dispersion: 0.02 }: the room seen through glass
+	glass_edges: 0.35, // 0 to 1: how much glass bevels stand out
 	environment: "studio", // or a URL, or { url, intensity: 1, rotation: 0 }; what metal and glass reflect
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
@@ -53,8 +54,11 @@ own `material` key (for example `material: "glass"`); without one it renders wit
 
 Glass dice are translucent: the page or scene behind shows through the tinted body and its back
 faces, while the numbers stay opaque. Reflections are the faint, untinted ones of real glass (strong
-only at grazing angles, with bright edges and sharp glints); the colour is in the light passing
-through, clear in the middle of a die and deeper towards its rim. `glass_opacity` sets how solid the body is, and a custom
+only at grazing angles, with small, soft glints); the colour is in the light passing
+through, clear in the middle of a die and deeper towards its rim. Bevels read as thicker glass:
+deeper body colour, with their reflections tinted by it and a thin bright rim only where they face
+a bright part of the room. `glass_edges` (0 to 1, default 0.35, live with `updateConfig`) sets how
+much they stand out; 0 leaves only the deeper colour and 1 gives bright, pale edges. `glass_opacity` sets how solid the body is, and a custom
 colorset can set its own:
 ```
 theme_customColorset: { name: "amber", foreground: "#F2743B", background: "#3A2418", outline: "#1A0E07", material: "glass", glass_opacity: 0.5 }

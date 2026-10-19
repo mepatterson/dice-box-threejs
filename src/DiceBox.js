@@ -34,6 +34,7 @@ const defaultConfig = {
 	textureScale: 0.5,
 	glass_opacity: 0.35,
 	glass_refraction: true,
+	glass_edges: 0.35,
 	environment: "studio",
 	highlightResult: false,
 	throwFrom: "any",
@@ -158,6 +159,7 @@ class DiceBox {
 		});
 		this.DiceFactory.setBumpMapping(true);
 		this.DiceFactory.setRefraction(this.glass_refraction);
+		this.DiceFactory.setGlassEdges(this.glass_edges);
 
 		// post config settings
 		this.surface = THEMES[this.theme_surface].surface
@@ -536,6 +538,11 @@ class DiceBox {
 		if ("glass_refraction" in options) {
 			this.glass_refraction = options.glass_refraction
 			this.DiceFactory.setRefraction(options.glass_refraction)
+			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+		}
+		if ("glass_edges" in options) {
+			this.glass_edges = options.glass_edges
+			this.DiceFactory.setGlassEdges(options.glass_edges)
 			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
 		}
 		if ("environment" in options) await this.setEnvironment(options.environment)

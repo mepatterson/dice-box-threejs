@@ -103,12 +103,15 @@ and `remove` act on existing dice by id.
   shows through instead of fading with the alpha, and makes a pixel as opaque as its brightest
   reflection (so highlights hold over the page). Reflections are three's dielectric ones (no clear
   coat, F0 0.04), untinted, with faint ones cut and strong ones kept; faces count as slightly domed
-  for two analytic glints. The body is the environment seen through the die (`glassSeen`: refracted,
+  for two analytic glints, kept small and soft and capped below white (`1 - exp`) so neither covers a face. The body is the environment seen through the die (`glassSeen`: refracted,
   bent further by the pixel's offset from the die centre, which the vertex shader passes as
   `vGlassOffset`, and folded upwards as if bounced off the table) filtered by the glass colour over a
   depth that grows from the middle of the die to its rim and on faces turned away; that depth also
-  raises the alpha, so the middle is clear and the rim deep. Bevels (`GLASS_EDGE`) are brighter and
-  more opaque, reading as bright edges; back faces (`GLASS_INTERIOR`) are darker. The paint mask is
+  raises the alpha, so the middle is clear and the rim deep. Bevels (`GLASS_EDGE`) are thicker
+  glass: a deeper filter of the body colour, a little more opaque, and their grazing reflections
+  tinted by the body colour except the bright ones (lamps, windows), which stay white as a thin rim.
+  `glass_edges` scales the whitening, brightness, opacity and reflection strength through one shared
+  uniform (`DiceFactory.setGlassEdges`), so it changes live without recompiling; back faces (`GLASS_INTERIOR`) are darker. The paint mask is
   the label alpha above the body's (`GLASS_OPACITY`), used linearly. Glass shadows are lighter.
 - **Environment** (`DiceBox.makeEnvironment`): a PMREM built once, when a colorset first needs
   it, and freed in `dispose()`. The default (`makeStudio`) is a small dark studio (a low band of
