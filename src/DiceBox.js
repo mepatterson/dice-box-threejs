@@ -655,6 +655,8 @@ class DiceBox {
 	getNotationVectors(notation, vector, boost, dist, side = 0){
 
 		let notationVectors = new DiceNotation(notation);
+		const slots = side ? this.sideSlots(notationVectors.set, side) : null;
+		let slot = 0;
 
 		for (let i in notationVectors.set) {
 
@@ -676,12 +678,7 @@ class DiceBox {
 
 				let pos
 				if (side) {
-					// just inside the side wall, somewhere in the middle 60% of its height
-					pos = {
-						x: -side * this.display.containerWidth * (this.wallScale - 0.03),
-						y: (Math.random() * 2 - 1) * 0.3 * this.display.containerHeight * this.wallScale,
-						z: Math.random() * 200 + 200
-					};
+					pos = slots(slot++);
 				} else {
 					pos = {
 						x: this.display.containerWidth * (vec.x > 0 ? -1 : 1) * (this.wallScale - 0.03),
@@ -759,6 +756,34 @@ class DiceBox {
 		}
 
 		return notationVectors;
+	}
+
+	// Side throws start each die in its own cell of a grid just inside the wall, in the middle 60%
+	// of its height (taller, then further in, then stacked higher when there are many dice), so no
+	// two dice start inside each other.
+	sideSlots(sets, side) {
+		const count = sets.reduce((n, set) => n + set.num, 0)
+		const radius = Math.max(...sets.map(set => this.DiceFactory.get(set.type).scale || 1)) * this.baseScale
+		const spacing = radius * 2.2
+		const halfWidth = this.display.containerWidth * this.wallScale
+		const halfHeight = this.display.containerHeight * this.wallScale
+		const columns = Math.max(1, Math.floor(halfWidth / spacing))
+		let band = 0.3 * halfHeight
+		let rows = Math.max(1, Math.floor(2 * band / spacing))
+		while (rows * columns < count && band < halfHeight - radius) {
+			band = Math.min(halfHeight - radius, band + spacing / 2)
+			rows = Math.max(1, Math.floor(2 * band / spacing))
+		}
+		return k => {
+			const column = Math.floor(k / rows)
+			const inColumn = Math.min(rows, count - column * rows)
+			const cell = 2 * band / inColumn
+			return {
+				x: -side * (halfWidth - 0.03 * this.display.containerWidth - (column % columns) * spacing),
+				y: -band + (k % rows + 0.5) * cell + (Math.random() - 0.5) * Math.max(0, cell - spacing),
+				z: Math.random() * 200 + 200 + Math.floor(column / columns) * spacing
+			}
+		}
 	}
 
 	// swaps dice faces to match desired result
