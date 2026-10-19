@@ -110,7 +110,8 @@ environment: { url: "/img/room.jpg", intensity: 1, rotation: 0 }
 ### Metal
 `metal` is polished (low roughness, fully metallic), `perfectmetal` is a mirror and `brushedmetal`
 is satin with a directional sheen. The body colour tints the metal: a gold or silver background gives
-gold or silver, dark brown gives copper and black gives gunmetal. Numbers are painted on as matte,
+gold or silver and dark brown gives copper. A dark grey or blue-grey body (for example `#3B444B`) stays
+dark, for gunmetal, and black gives blackened steel. Numbers are painted on as matte,
 non-metallic enamel so they stay readable against the reflections.
 
 ### Glass refraction

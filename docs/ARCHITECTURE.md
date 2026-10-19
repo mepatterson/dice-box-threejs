@@ -122,7 +122,8 @@ and `remove` act on existing dice by id.
   material at it (`DiceFactory.setEnvironment`), frees the old one and renders once.
 - **Metal** (`metalShader`, an `onBeforeCompile` patch on `metal`, `perfectmetal` and
   `brushedmetal`): fully metallic, so the body colour is the reflection tint; a dark body has its
-  brightest channel lifted to `METAL_FLOOR` (dark brown reads as copper, black as gunmetal). The
+  brightest channel lifted to `METAL_FLOOR` (dark brown reads as copper), or, the closer the body is to
+  neutral, only to `METAL_DARK_FLOOR`, so grey, blue-grey and black stay dark gunmetal. The
   label's bump canvas (white with black numbers) is also its `metalnessMap`, which the patch reads
   as a paint mask: numbers are matte and non-metallic. The mask is used close to linearly and metal
   has no bump map, since a bump or a hard threshold at the number edges mirrored stray bits of the

@@ -94,12 +94,14 @@ function glassShader(shader, refraction) {
 		`);
 }
 
-// Metal reflects the environment tinted by the body colour, so a dark body still reads as metal
-// (dark brown becomes copper, black becomes gunmetal) by lifting its brightest channel to
-// METAL_FLOOR. The label's bump canvas doubles as a paint mask: where the numbers are drawn
+// Metal reflects the environment tinted by the body colour, so a dark body still reads as metal by
+// lifting its brightest channel to a floor: METAL_FLOOR for a coloured body (dark brown becomes
+// copper), but only METAL_DARK_FLOOR for a near-neutral one, so grey, blue-grey and black stay dark
+// gunmetal or blackened steel instead of turning silver. The label's bump canvas doubles as a paint mask: where the numbers are drawn
 // (black) the surface is matte non-metallic paint, so they stay readable against reflections. The
 // mask is used close to linearly so its edges stay as smooth as the texture filtering makes them.
 const METAL_FLOOR = 0.42;
+const METAL_DARK_FLOOR = 0.14;
 function metalShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', `
 		float metalnessFactor = metalness;
@@ -109,7 +111,10 @@ function metalShader(shader) {
 			metalPaint = 1.0 - smoothstep( 0.25, 0.95, dot( texelMetalness.rgb, vec3( 0.3333 ) ) );
 		#endif
 		float metalPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
-		vec3 metalTint = metalPeak < 0.001 ? vec3( ${METAL_FLOOR.toFixed(3)} ) : diffuseColor.rgb * ( max( metalPeak, ${METAL_FLOOR.toFixed(3)} ) / metalPeak );
+		float metalLow = min( diffuseColor.r, min( diffuseColor.g, diffuseColor.b ) );
+		float metalSaturation = metalPeak < 0.001 ? 0.0 : 1.0 - metalLow / metalPeak;
+		float metalFloor = mix( ${METAL_DARK_FLOOR.toFixed(3)}, ${METAL_FLOOR.toFixed(3)}, smoothstep( 0.35, 0.75, metalSaturation ) );
+		vec3 metalTint = metalPeak < 0.001 ? vec3( metalFloor ) : diffuseColor.rgb * ( max( metalPeak, metalFloor ) / metalPeak );
 		diffuseColor.rgb = mix( metalTint, diffuseColor.rgb, metalPaint );
 		metalnessFactor *= 1.0 - metalPaint;
 		roughnessFactor = mix( roughnessFactor, 0.55, metalPaint );
