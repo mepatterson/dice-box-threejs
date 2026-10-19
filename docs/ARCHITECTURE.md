@@ -95,7 +95,8 @@ and `remove` act on existing dice by id.
 - World units are half a CSS pixel: the camera height is set so the visible half-height in
   world units equals the container's height in CSS pixels.
 - `makeWorldBox` creates the static cannon planes once (the floor and four walls) and puts
-  the walls at 93% of the half-extent. During a throw a resize is held back until the dice
+  the walls at 93% of the half-extent, or further in on short boxes where perspective would
+  push the top of a die resting against a wall past the canvas edge. Dice spawn just inside them. During a throw a resize is held back until the dice
   settle, then the walls move and resting dice outside them slide back in.
 - There is no idle render loop. Frames are rendered only while a throw animates, plus a
   single render after setup, resize, clear and remove. `clearDice({fade})` fades the canvas
