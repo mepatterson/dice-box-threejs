@@ -26,14 +26,21 @@ const defaultConfig = {
 // thicker glass: deeper body colour, their grazing reflections tinted by it, with only the bright
 // ones left white; glassEdges (0 to 1) scales how much they stand out.
 // glassRefraction is x: ior, y: strength, z: dispersion. The painted numbers are matte.
+// An iridescent glass (a pearl or opal finish, or a colorset's iridescence) adds a thin-film
+// shimmer: three's film colour for the domed normal and a film that thickens towards the rim, mostly
+// its hue, lit by a blurred reflection of the room with a floor so it shows in a dark room too. Faint
+// reflections are cut on glass, which would drop three's own film term, so this one is added after.
+const GLASS_FILM = { STRENGTH: 0.16, SATURATION: 1.3, FLOOR: 0.18 };
 function glassShader(shader, refraction, edges) {
 	shader.uniforms.glassRefraction = refraction;
 	shader.uniforms.glassEdges = edges;
 	shader.vertexShader = shader.vertexShader
 		.replace('void main() {', 'varying vec3 vGlassOffset;\nvoid main() {')
 		.replace('#include <project_vertex>', '#include <project_vertex>\nvGlassOffset = mvPosition.xyz - ( modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;');
+	const film = Object.entries(GLASS_FILM).map(([k, v]) => `#define GLASS_FILM_${k} ${v.toFixed(3)}`).join('\n');
 	shader.fragmentShader = shader.fragmentShader
-		.replace('void main() {', `uniform vec3 glassRefraction;
+		.replace('void main() {', `${film}
+			uniform vec3 glassRefraction;
 			uniform float glassEdges;
 			varying vec3 vGlassOffset;
 			vec3 glassSeen( vec3 dir ) {
@@ -87,6 +94,18 @@ function glassShader(shader, refraction, edges) {
 				vec3 glassEdgeTint = mix( vec3( 1.0 ), glassTint, 0.75 ) * pow( glassPeak, 0.25 );
 				float glassHot = smoothstep( 0.5, 1.4, glassShine );
 				glassSpecular *= mix( glassEdgeTint * mix( 0.3, 1.0, glassEdges ), vec3( mix( 0.55, 1.0, glassEdges ) ), glassHot );
+			#endif
+			#if defined( USE_IRIDESCENCE ) && defined( ENVMAP_TYPE_CUBE_UV ) && ! defined( GLASS_INTERIOR )
+				vec3 glassFilmNormal = normalize( geometryNormal + vec3( glassLens * 0.5, 0.0 ) );
+				float glassFilmCos = saturate( dot( glassFilmNormal, geometryViewDir ) );
+				float glassFilmThickness = mix( iridescenceThicknessMinimum, iridescenceThicknessMaximum, 0.4 + 0.6 * glassRim );
+				vec3 glassFilm = evalIridescence( 1.0, iridescenceIOR, glassFilmCos, glassFilmThickness, vec3( 0.04 ) );
+				vec3 glassFilmTint = max( mix( vec3( 1.0 ), glassFilm / max( dot( glassFilm, vec3( 0.3333 ) ), 0.0001 ), GLASS_FILM_SATURATION ) - 0.4, 0.0 ) * 1.6;
+				vec3 glassFilmDir = inverseTransformDirection( reflect( - geometryViewDir, glassFilmNormal ), viewMatrix );
+				vec3 glassFilmLight = textureCubeUV( envMap, envMapRotation * glassFilmDir, 0.55 ).rgb * envMapIntensity;
+				float glassFilmLevel = max( dot( glassFilmLight, vec3( 0.2126, 0.7152, 0.0722 ) ), GLASS_FILM_FLOOR );
+				float glassFilmFresnel = 0.45 + 0.55 * pow( 1.0 - glassFilmCos, 2.0 );
+				glassSpecular += glassFilmTint * glassFilmLevel * glassFilmFresnel * material.iridescence * GLASS_FILM_STRENGTH * ( 1.0 - glassPaint );
 			#endif
 			#ifndef GLASS_INTERIOR
 				vec3 glassDome = normalize( geometryNormal + vec3( glassLens * 0.45, 0.0 ) );
@@ -193,6 +212,7 @@ class DiceFactory {
 		this.surfaces = new Map();
 		this.surface_tints = new Map();
 		this.dice_accent = '';
+		this.dice_iridescence = null;
 		this.label_font = null;
 		this.gild_sweep = { value: 2 };
 
@@ -679,8 +699,7 @@ class DiceFactory {
 				materials.push(mat);
 				continue;
 			}
-			let preset = MATERIALTYPES[this.dice_material];
-			if (this.dice_material == 'none' && this.dice_texture_rand && this.dice_texture_rand.finish) preset = { ...preset, ...this.dice_texture_rand.finish };
+			const preset = this.materialPreset();
 			if (this.dice_material == 'glass') {
 				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
 				mat.isGlass = true;
@@ -760,6 +779,22 @@ class DiceFactory {
 		return materials;
 	}
 
+	// A texture's finish applies to plastic; glass takes only its thin film. A colorset's iridescence
+	// (0 to 1) sets or adds that film on plastic and glass.
+	materialPreset() {
+		let preset = MATERIALTYPES[this.dice_material];
+		const finish = this.dice_texture_rand && this.dice_texture_rand.finish;
+		if (finish && this.dice_material == 'none') preset = { ...preset, ...finish };
+		if (finish && finish.iridescence && this.dice_material == 'glass') {
+			const { iridescence, iridescenceIOR, iridescenceThicknessRange } = finish;
+			preset = { ...preset, iridescence, iridescenceIOR, iridescenceThicknessRange };
+		}
+		if (this.dice_iridescence !== null && (this.dice_material == 'none' || this.dice_material == 'glass')) {
+			preset = { iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 520], ...preset, iridescence: this.dice_iridescence };
+		}
+		return preset;
+	}
+
 	makeGlass(mat, opacity) {
 		mat.premultipliedAlpha = true;
 		mat.defines = { ...mat.defines, GLASS_OPACITY: opacity.toFixed(3) };
@@ -828,6 +863,7 @@ class DiceFactory {
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
 		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
 		if (texture.surface) finish += this.dice_material + this.dice_accent;
+		if (this.dice_iridescence !== null) finish += `iridescence${this.dice_iridescence}`;
 		finish += fontKey(this.labelFont(diceobj));
 		if (diceobj.shape == 'd4') {
 			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
@@ -1235,6 +1271,7 @@ class DiceFactory {
 		this.dice_material = material == 'plastic' ? 'none' : material;
 		this.edge_color = colordata.hasOwnProperty("edge") ? colordata.edge:colordata.background;
 		this.dice_accent = colordata.accent || '';
+		this.dice_iridescence = typeof colordata.iridescence == 'number' ? Math.min(1, Math.max(0, colordata.iridescence)) : null;
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 	}
 
