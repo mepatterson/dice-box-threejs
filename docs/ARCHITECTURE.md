@@ -82,7 +82,8 @@ and `remove` act on existing dice by id.
   presets from `const/materialtypes.js`; an unknown material falls back to `MeshPhongMaterial`. Plastic
   and wood drop the environment's diffuse light (`dielectricShader`) so it only adds reflections.
   Wood with no texture overlays a procedural grain (`woodGrain`, generated once with its own random
-  numbers so seeded throws repeat), turned and shifted per face, on the label and faintly on the bump. All are
+  numbers so seeded throws repeat), turned and shifted per face, on the label and faintly on the bump. An image
+  texture's bump is drawn at 40% (full strength on metal, where it is the paint mask). All materials are
   transparent with depth testing off, which is fine for convex dice drawn back to front.
 - **Procedural textures** (`surfaces.js`, `drawSurface`): a texture with a `surface` name is generated the first
   time a label needs it, at 512px with its own seeded value noise, and kept per box (`surfaces`, freed in

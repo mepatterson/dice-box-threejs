@@ -834,9 +834,12 @@ class DiceFactory {
 			context.drawImage(texture.texture, 0, 0, ts, ts);
 			context.globalCompositeOperation = 'source-over';
 
+			// at full strength a texture's bump turns the gloss into sandpaper; on metal it is the paint mask
 			if (texture.bump) {
 				contextBump.globalCompositeOperation = 'source-over';
+				contextBump.globalAlpha = isMetal(this.dice_material) ? 1 : 0.4;
 				contextBump.drawImage(texture.bump, 0, 0, ts, ts);
+				contextBump.globalAlpha = 1;
 			}
 		} else if (texture.surface && !glow) {
 			this.drawSurface(context, contextBump, ts, index, texture.surface, backcolor);
