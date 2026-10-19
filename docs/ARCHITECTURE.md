@@ -74,10 +74,23 @@ and `remove` act on existing dice by id.
   cached by type, label and colours.
 - **Materials** (`createMaterials`): one material per label slot, cached alongside its
   texture, so every d20 of one colorset shares the same materials. A colorset material of
-  `none` gives `MeshPhongMaterial`, anything else gives `MeshStandardMaterial` with a
-  preset from `const/materialtypes.js`. All are transparent with depth testing off,
-  which is fine for convex dice drawn back to front.
-- Nothing is created per die except the mesh, its material array and its cannon body, so
+  `none` gives `MeshPhongMaterial`, `metal` and `wood` give `MeshStandardMaterial` and `glass`
+  gives `MeshPhysicalMaterial` (clearcoat), with presets from `const/materialtypes.js`. All are
+  transparent with depth testing off, which is fine for convex dice drawn back to front.
+- **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. Each
+  die gets a child mesh with one shared `BackSide` material for its back faces. It is created
+  before the die, so its lower id sorts it first at the same depth: per die, back faces then
+  front faces, and neither pass overlaps itself on a convex die. `glassShader` (an
+  `onBeforeCompile` patch) writes premultiplied colour so reflections are added on top of what
+  shows through instead of fading with the alpha, makes a pixel as opaque as its brightest
+  reflection (so highlights hold over the page), drops the environment's diffuse light, makes
+  faces more opaque at grazing angles and keeps the labels matte. Glass shadows are lighter.
+- **Environment** (`DiceBox.makeEnvironment`): a PMREM of a small dark studio (a low band of
+  light and a few soft panels), built once when a colorset first needs it and freed in
+  `dispose()`. Materials whose preset has an `envMapIntensity` (metal, glass) reflect it;
+  plastic and wood don't sample it.
+- Nothing is created per die except the mesh (and a glass die's interior mesh), its material
+  array and its cannon body, so
   `clearDice` has nothing to free; `dispose()` frees the caches and the renderer.
 - **Colours** (`DiceColors`): a colorset names foreground, background, outline, an optional
   texture and an optional material. Arrays pick a random entry per die. A custom colorset

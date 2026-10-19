@@ -37,6 +37,7 @@ const defaultConfig = {
 	maxPixelRatio: 2, // caps devicePixelRatio; 3x phones render at 2x
 	rollingPixelRatio: null, // e.g. 1 to render moving dice at 1x and the settled dice at full ratio
 	textureScale: 0.5, // label texture resolution relative to the original 512px faces
+	glass_opacity: 0.35, // how much of what's behind a glass die its body hides, 0 to 1
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	onRollComplete: () => {}
 }
@@ -45,6 +46,15 @@ const defaultConfig = {
 `theme_material` applies to stock colorsets. A `theme_customColorset` takes its material from its
 own `material` key (for example `material: "glass"`); without one it renders with the plain
 (Phong) material.
+
+Glass dice are translucent: the page or scene behind shows through the tinted body and its back
+faces, while the numbers stay opaque. `glass_opacity` sets how solid the body is, and a custom
+colorset can set its own:
+```
+theme_customColorset: { name: "amber", foreground: "#F2743B", background: "#3A2418", outline: "#1A0E07", material: "glass", glass_opacity: 0.5 }
+```
+Metal and glass reflect a small studio environment the box generates once, the first time a
+colorset needs it.
 
 ## Getting Results
 ### There are three ways to get results
