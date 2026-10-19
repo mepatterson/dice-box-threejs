@@ -15,7 +15,7 @@ die land on a value chosen in advance.
 | `src/DicePreset.js` | One die type (labels, values, mass, inertia, scale) built from `const/dice.js`. |
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
 | `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
-| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian) and the wood grain. |
+| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles) and the wood grain. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
 ## How a roll flows
@@ -105,13 +105,21 @@ and `remove` act on existing dice by id.
   (`surface_tints`), then drawn into the label canvas over the body colour, turned and shifted per face like
   the wood grain; the height goes faintly into the bump canvas (not on metal, where that canvas is the paint mask; glass has no bump). The numbers are drawn
   last on both canvases, so no grain shows under them. Nothing new reaches the GPU: the pattern lives in the
-  label textures the dice already have. On glass the masks are drawn at half strength (or the surface's `glass` strength;
-  opal's are full), so they read as partly opaque inclusions. A layer with `hue` also keeps its alpha and a hue field
+  label textures the dice already have. On glass the masks are drawn at half strength (or the layer's or surface's `glass`
+  strength; opal's, sparkles' and obsidian's flecks are full), so they read as partly opaque inclusions. A layer with `hue` also keeps its alpha and a hue field
   (0 to 1, wrapping), and a `spectrum` layer (or pearl's sheets with the colorset's `rainbow`) is coloured per pixel
   by `spectrumLayer` through a 256-entry lookup: OKLCH at the layer's lightness and chroma, so every hue is equally
   light, along `PLAY` (mostly blue, green and violet, as in opal and abalone, no yellow-green), or within 70 degrees of
   a coloured accent's OKLCH hue. The body sets a tone: pale bodies get softer, thinner colour, near-black opaque ones
-  lighter, fuller colour. These are cached in `surface_tints` like the accent tints, keyed by accent and tone. A texture's
+  lighter, fuller colour. An accent layer can name a `fallback` colour for colorsets without an accent
+  (obsidian's pale silver). A surface with a `glint` canvas (obsidian, sparkles) marks its flecks in the bump
+  canvas (red 1, green the fleck's tilt direction, blue 1 minus its glint, so red minus blue is the glint, zero on
+  the white background and the black numbers, and the red bump height is untouched); on plastic and glass
+  `addGlint` gives the material that canvas as `glintMap` and `glintShader` (run before the glass patch) turns each
+  fleck into a tilted mirror: one sharp environment lookup in its reflected direction, squared so only bright parts
+  of the room flash, plus two key-light lobes, tinted by the fleck's colour. Glass adds it to its reflections
+  (`DICE_GLINT`), plastic to its light; glass otherwise leaves that canvas unused, so a glinting glass label uploads
+  one more texture. Metal is skipped, since its bump canvas is the paint mask. These are cached in `surface_tints` like the accent tints, keyed by accent and tone. A texture's
   `finish` (roughness, clear coat, iridescence, sheen) is merged into the plastic preset (`materialPreset`); glass
   takes only its iridescence, and a colorset's `iridescence` (0 to 1) sets or adds it on plastic and glass.
 - **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. Each

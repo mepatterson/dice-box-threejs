@@ -28,7 +28,7 @@ const defaultConfig = {
 	sound_dieMaterial: 'plastic',
 	theme_customColorset: null,
 	theme_colorset: "white", // see available colorsets in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/colorsets.js
-	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
+	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian" | "sparkles", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
 	theme_material: "glass", // "none" | "metal" | "wood" | "glass" | "plastic"
 	gravity_multiplier: 400,
 	light_intensity: 0.7,
@@ -74,7 +74,7 @@ little darker than the old fully matte finish. Wood without a texture gets a woo
 body colour and a satin varnish, so it is told apart from plastic at a glance.
 
 ### Procedural textures
-Six textures are generated in code instead of loaded from `public/textures`, so they need no asset
+Seven textures are generated in code instead of loaded from `public/textures`, so they need no asset
 files. Each is drawn in the colorset's own colours, with a finish to match:
 - `bone`: ivory. Faint warm staining, fine grain lines, tiny pores and the odd hairline crack, a satin
   finish and a very slight bump. Dark brown or near-black numbers read best on it.
@@ -92,8 +92,14 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   none, gives the full play of colour). Made for black glass (`background: "#000000"`, `material:
   "glass"`) and also good on deep coloured glass and on pale or near-black plastic, where it is
   softer and milkier or fuller to match. White numbers read best on dark bodies.
-- `obsidian`: volcanic glass. Tiny bright flecks and faint silvery bands for a near-black body under a
-  mirror-like clear coat. White numbers read best; gold looks richer.
+- `obsidian`: volcanic glass. Tiny bright flecks (pale silver, or the colorset's `accent`) that glint
+  as the die turns and faint silvery bands for a near-black body under a mirror-like clear coat. White
+  numbers read best; gold looks richer. On glass the flecks keep full strength, so they show on pale
+  and mid bodies too.
+- `sparkles`: glitter resin. A dense scatter of fine flecks and a few larger ones in white and the
+  accent (or a lighter body colour), each a tiny tilted mirror, so different flecks flash as the die
+  turns. Works on light and dark glass and on plastic; the numbers are drawn over it, clear of
+  flecks.
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }
