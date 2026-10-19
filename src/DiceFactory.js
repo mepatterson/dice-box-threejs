@@ -18,6 +18,7 @@ class DiceFactory {
 		this.geometries = {};
 
 		this.materials_cache = {};
+		this.mesh_materials_cache = new Map();
 		this.cache_hits = 0;
 		this.cache_misses = 0;
 
@@ -48,6 +49,23 @@ class DiceFactory {
 	setBumpMapping(bumpMapping){
 		this.bumpMapping = bumpMapping;
 		this.materials_cache = {};
+		this.mesh_materials_cache = new Map();
+	}
+
+	// Frees every cached geometry, texture and material on the GPU.
+	dispose() {
+		Object.values(this.geometries).forEach(geom => geom && geom.dispose());
+		Object.values(this.materials_cache).forEach(entry => {
+			entry.composite && entry.composite.dispose();
+			entry.bump && entry.bump.dispose();
+		});
+		this.mesh_materials_cache.forEach(mat => {
+			if (mat.bumpMap && mat.bumpMap.isNormalImage) mat.bumpMap.dispose();
+			mat.dispose();
+		});
+		this.geometries = {};
+		this.materials_cache = {};
+		this.mesh_materials_cache = new Map();
 	}
 
 	// returns a dicemesh (THREE.Mesh) object
@@ -91,7 +109,7 @@ class DiceFactory {
 					closest_face = face;
 				}
 			}
-			let matindex = closest_face.materialIndex - 1;
+			let matindex = (this.faceMap ? this.faceMap[closest_face.materialIndex] : closest_face.materialIndex) - 1;
 			let offset = 2
 
 			const diceobj = DiceFactory.dice[this.notation.type];
@@ -199,7 +217,11 @@ class DiceFactory {
 		}
 		
 		for (var i = 0; i < labels.length; ++i) {
-			var mat;
+			var mat = this.cachedMaterial(diceobj, labels, i, size, margin, allowcache);
+			if (mat) {
+				materials.push(mat);
+				continue;
+			}
 			if (this.dice_material != 'none') {
 				mat = new THREE.MeshStandardMaterial(MATERIALTYPES[this.dice_material]);
 				mat.envMapIntensity = 0;
@@ -239,6 +261,7 @@ class DiceFactory {
 					}
 					if (diceobj.shape != 'd4' && diceobj.normals[i]) {
 						mat.bumpMap = new THREE.Texture(diceobj.normals[i]);
+						mat.bumpMap.isNormalImage = true;
 						mat.bumpScale = 4;
 						mat.bumpMap.needsUpdate = true;
 					}
@@ -248,11 +271,49 @@ class DiceFactory {
 			mat.transparent = true;
 			mat.depthTest = false;
 			mat.needUpdate = true;
+			if (canvasTextures && canvasTextures.key) this.mesh_materials_cache.set(this.materialKey(canvasTextures.key, i, size), mat);
 			materials.push(mat);
 		}
-		//Edge mat
 
 		return materials;
+	}
+
+	materialKey(textureKey, index, size) {
+		return `${textureKey}|${index}|${size}|${this.dice_material}|${this.bumpMapping}`
+	}
+
+	// Dice of the same type and colours share materials (and so textures) instead of each die
+	// building its own. Returns null on a miss.
+	cachedMaterial(diceobj, labels, index, size, margin, allowcache) {
+		if (!allowcache) return null;
+		let texture = this.dice_texture_rand;
+		let backcolor = this.dice_color_rand;
+		if (index == 0) {
+			texture = this.dice_texture_rand.composite != "source-over" ? this.dice_texture_rand : {name: "none"};
+			backcolor = this.edge_color_rand;
+		}
+		texture = texture || this.dice_texture_rand;
+		backcolor = backcolor || this.dice_color_rand;
+		const key = this.textureKey(diceobj, labels, index, texture, this.label_color_rand, this.label_outline_rand, backcolor);
+		if (!key || !this.materials_cache[key]) return null;
+		return this.mesh_materials_cache.get(this.materialKey(key, index, size)) || null;
+	}
+
+	textureKey(diceobj, labels, index, texture, forecolor, outlinecolor, backcolor) {
+		let text = labels[index];
+		if (text === undefined) return null;
+		let textCache = text;
+		if (text instanceof HTMLImageElement) {
+			textCache = text.src;
+		} else if (text instanceof Array) {
+			text.forEach(el => {
+				textCache += el.src;
+			});
+		}
+		if (diceobj.shape == 'd4') {
+			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor;
+		}
+		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor;
 	}
 
 	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache) {
@@ -266,20 +327,9 @@ class DiceFactory {
 
 		let text = labels[index];
 		let isTexture = false;
-		let textCache = text;
-		if (text instanceof HTMLImageElement) {
-			textCache = text.src;
-		} else if (text instanceof Array) {
-			text.forEach(el => {
-				textCache += el.src;
-			});
-		}
 
 		// an attempt at materials caching
-		let cachestring = diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor;
-		if (diceobj.shape == 'd4') {
-			cachestring = diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor;
-		}
+		let cachestring = this.textureKey(diceobj, labels, index, texture, forecolor, outlinecolor, backcolor);
 		if (allowcache && this.materials_cache[cachestring] != null) {
 			this.cache_hits++;
 			return this.materials_cache[cachestring];
@@ -503,7 +553,8 @@ class DiceFactory {
 		if (allowcache) {
 			// cache new texture
 			this.cache_misses++;
-			this.materials_cache[cachestring] = {composite:compositetexture,bump:bumpMap};
+			this.materials_cache[cachestring] = {composite:compositetexture,bump:bumpMap,key:cachestring};
+			return this.materials_cache[cachestring];
 		}
 
 		return {composite:compositetexture,bump:bumpMap};

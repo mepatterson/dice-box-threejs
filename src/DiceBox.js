@@ -575,12 +575,6 @@ class DiceBox {
 		if (valueindex == resultindex) return;
 
 		// find material index for corresponding value -> face and swap them
-		// must clone the geom before modifying it
-		let geom = dicemesh.geometry.clone();
-
-		// find list of faces that use the matching material index for the given value/result
-		let geomindex_value = [];
-		let geomindex_result = [];
 
 		// it's magic but not really
 		// the mesh's materials start at index 2
@@ -601,33 +595,18 @@ class DiceBox {
 
 		//and probably some third rule eventually...
 
-		// let normals = geom.getAttribute('normal').array;
-		for (var i = 0, l = geom.groups.length; i < l; ++i) {
-			const face = geom.groups[i];
-			const matindex = face.materialIndex;
+		// Swap the two labels by swapping the materials the two face groups draw with. The geometry
+		// stays shared; faceMap tells getFaceValue which label each face group now shows.
+		const groups = dicemesh.geometry.groups
+		if (!groups.some(g => g.materialIndex == material_value) || !groups.some(g => g.materialIndex == material_result)) return;
 
-			if (matindex == material_value) {
-				geomindex_value.push(i);
-				continue;
-			}
-			if (matindex == material_result) {
-				geomindex_result.push(i);
-				continue;
-			}
-		}
+		const materials = dicemesh.material.slice()
+		const faceMap = dicemesh.faceMap ? dicemesh.faceMap.slice() : materials.map((m, i) => i)
+		;[materials[material_value], materials[material_result]] = [materials[material_result], materials[material_value]]
+		;[faceMap[material_value], faceMap[material_result]] = [faceMap[material_result], faceMap[material_value]]
 
-		if (geomindex_value.length <= 0 || geomindex_result.length <= 0) return;
-
-		//swap the materials
-		for(let i = 0, l = geomindex_result.length; i < l; i++) {
-			geom.groups[geomindex_result[i]].materialIndex = material_value;
-		}
-
-		for(let i = 0, l = geomindex_value.length; i < l; i++) {
-			geom.groups[geomindex_value[i]].materialIndex = material_result;
-		}
-
-		dicemesh.geometry = geom;
+		dicemesh.material = materials;
+		dicemesh.faceMap = faceMap;
 		dicemesh.result = [];
 	}
 
@@ -639,26 +618,16 @@ class DiceBox {
 		if (!(value >= 1 && value <= 4)) return;
 
 		let num = result - value;
-		let geom = dicemesh.geometry.clone();
+		if (num == 0) return;
+		if (num < 0) num += 4;
 
-		for (let i = 0, l = geom.groups.length; i < l; ++i) {
-			const face = geom.groups[i];
-			let matindex = face.materialIndex;
-			if (matindex == 0) continue;
-        
-			matindex += num - 1;
-
-			while (matindex > 4) matindex -= 4;
-			while (matindex < 1) matindex += 4;
-
-			face.materialIndex = matindex + 1;
-		}
-		if (num != 0) {
-			if (num < 0) num += 4;
-			dicemesh.material = this.DiceFactory.createMaterials(diceobj, 0, 0, false, num);
-		}
-
-		dicemesh.geometry = geom;
+		// Every numbered face moves num places round, and the label set rotated by the same
+		// amount keeps the corner numbers consistent.
+		const base = this.DiceFactory.createMaterials(diceobj, 0, 0, true, num);
+		const faceMap = base.map((m, i) => i < 2 ? i : ((i - 2 + num) % 4) + 2);
+		dicemesh.material = faceMap.map(i => base[i]);
+		dicemesh.faceMap = faceMap;
+		dicemesh.result = [];
 	}
 
 	//spawns one dicemesh object from a single vectordata object
