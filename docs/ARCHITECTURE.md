@@ -28,38 +28,48 @@ die land on a value chosen in advance.
    the edge of the box, a velocity, an angular velocity and a random orientation. Sets with
    the same type, operator and function are merged, so forced results follow set order, not
    the order the dice were written in.
-2. **Create.** `rollDice` clears the old dice, then `spawnDice` asks `DiceFactory.create`
-   for a mesh per die and gives it a cannon `Body` using the shape stored on the geometry.
-3. **Simulate.** `simulateThrow` steps the cannon world synchronously, at a fixed
-   `framerate` (1/60 s), until every die sleeps or `iterationLimit` steps pass. `throwFinished`
-   is checked before every step: as dice fall asleep their face is read (`storeRolledValue`
-   via `getFaceValue`, which finds the face normal closest to straight up, or straight down
-   for a d4) and they turn kinematic.
-4. **Rewind.** `spawnDice(vector, mesh)` replaces each body with a fresh one at the same
-   start state. cannon-es is deterministic for identical inputs, so replaying the same
-   steps lands each die on the same face.
-5. **Relabel (the predetermined trick).** For every forced result that differs from the
+2. **Create.** `roll` clears the old dice (unless `clear: false`), then `spawnThrow` asks
+   `DiceFactory.create` for a mesh per die in its theme (see below) and gives it a cannon `Body` using
+   the shape stored on the geometry, at its start state.
+3. **Simulate.** `launch` runs `simulate`, which steps the cannon world synchronously, at a fixed
+   `framerate` (1/60 s), until every new die sleeps or `iterationLimit` steps pass, recording every
+   die's position and quaternion at every step. Before each step, a die that has fallen asleep has its
+   face read (`storeRolledValue` via `getFaceValue`, which finds the face normal closest to straight up,
+   or straight down for a d4) and turns kinematic with zero velocity, so it stays put and later dice
+   bounce off it. Collisions that would make a sound are recorded with their step.
+4. **Relabel (the predetermined trick).** For every forced result that differs from the
    simulated face, `swapDiceFace` swaps which material (label texture) is drawn on the face
    that will end up on top and the face that carries the wanted number. Each face group of the
    geometry has a `materialIndex`; the mesh gets its own copy of the material array with the
    two entries swapped, and a `faceMap` that tells `getFaceValue` which label each face group
    now shows. Physics and the shared geometry are untouched. A d4 shows three numbers per
    face, so `swapDiceFace_D4` rotates every face by the difference and uses the label set
-   rotated by the same amount. The stored result is cleared so the replay reads the forced
-   value.
-6. **Animate.** `animateThrow` runs on `requestAnimationFrame`, steps the world as many
-   fixed steps as wall-clock time allows (at most 60 frames a second), copies body positions
-   and quaternions to the meshes and renders. `throwFinished` runs before every step, exactly
-   as in the simulation, so dice freeze on the same step and land on the same face. Faces are
-   read again on the relabelled meshes, so the results report the forced values.
-7. **Results.** When everything sleeps the callback builds the results object
-   (`getDiceResults`: sets, rolls, modifier, total), calls `onRollComplete`, dispatches a
-   `rollComplete` DOM event and resolves the promise. `animateAfterThrow` renders one more
-   frame and the loop stops.
+   rotated by the same amount (`DiceFactory.labelSet`, in the die's own theme and colour picks). The
+   stored result is cleared so it is read again from the relabelled mesh.
+5. **Play back.** The throw is queued with its recording and a start step `LEAD_STEPS` (2) ahead
+   of the shared step clock (`clockStep`: `performance.now()` in fixed steps), so the simulation has
+   normally finished by then. `frame`, the one `requestAnimationFrame` loop, puts every throw's meshes
+   at the recorded pose for the current step, plays its sounds, runs the pops, sweeps and twinkles, and
+   renders only when something changed. Playback is the simulation itself, so the dice land exactly
+   where the simulation read them; no second physics run has to repeat it.
+6. **Results.** When a throw's last frame is reached its cleared faces are read again (they report the
+   forced values), the callback builds the results (`rollResults`: sets, rolls, modifier, total, for
+   the dice of that throw), highlights its dice, calls `onRollComplete`, dispatches a `rollComplete` DOM
+   event and resolves the promise. The loop stops once nothing moves or pops.
 
-`add("1d12@7")` runs the same steps for the new dice only. The dice already on the table
-are kinematic, so they act as obstacles in both the simulation and the replay. `reroll`
-and `remove` act on existing dice by id.
+`add("1d12@7")` runs the same steps for the new dice only, and `reroll` for dice woken on the table.
+The dice already at rest are kinematic, so they act as obstacles.
+
+**Concurrent throws.** A throw may start while others are still playing back. Its simulation starts
+at its own start step; the dice of the other throws are kinematic bodies that `drive` puts at the pose
+their recording has for that same step, with the velocity and spin that carry them to the next one, so
+cannon resolves contacts against moving dice. The new dice bounce off them; they have infinite mass to
+the solver and follow their recording whatever happens, so their results never change. Afterwards
+their bodies go back to their final pose, where they rest once their playback ends. Interaction is one
+way (a later die can be shoved by an earlier one, never the reverse), which reads naturally at the
+speeds involved. The cost is one synchronous simulation per throw, with every die on the table in the
+broadphase. Queueing throws instead would keep two-way contact but delay a second player's dice by a
+whole throw (2 to 4 s); a single re-simulation of all moving dice would change faces already chosen.
 
 ## Geometry, textures and materials
 
@@ -88,6 +98,17 @@ and `remove` act on existing dice by id.
   where Arial's is. The dot of a 6 or 9 is drawn at the digit's right edge, which for Arial is where the
   old `'  .'` put it. Die types whose definition sets a font (`ownFont`) keep it; variants are drawn with
   the font in `diceLabel`.
+- **Themes** (`DiceFactory.useTheme`): each colorset, keyed by its content (`themeKey`, ignoring its
+  name), gets a theme holding its own texture, material, highlight and accent-tint caches, plus its
+  glass edge and refraction uniforms when the colorset sets them (otherwise the box's shared ones).
+  `selectTheme` points the factory's flat colorset state and cache references at it before a die is
+  built, and every material, label and die remembers its theme (`diceTheme`), so variants (glow,
+  dim, strike, the d4 relabel) are drawn in the die's own theme. Geometry, programs, the procedural
+  surfaces and the wood grain are shared by all themes. Themes live in a `Map` in least recently used
+  order; after a throw spawns, `trimThemes` frees the oldest beyond `themeCache` that no die on the
+  table uses (nor the box's own theme, nor one being preloaded), and the box forgets its resolved
+  colorset. `resolveTheme` loads images, the font and the environment once per theme and caches the
+  result, so throws in a ready theme start synchronously.
 - **Materials** (`createMaterials`): one material per label slot, cached alongside its
   texture, so every d20 of one colorset shares the same materials. A colorset material of
   `none` (or `plastic`) or `wood` gives `MeshPhysicalMaterial` with a clear coat, `metal` and
@@ -119,8 +140,8 @@ and `remove` act on existing dice by id.
   fleck into a tilted mirror. It always has a steady sheen that follows the face's light. Its glint (a blurred
   environment lookup in its reflected direction, past a threshold so only bright parts of the room count, plus two
   wide key-light lobes, capped) is scaled by `glint_state`, one uniform shared by every glinting material: x is 0
-  from the start of a throw (`endPop`), so tumbling flecks never flicker between frames, and y drives a slow
-  per-fleck twinkle. When dice settle `highlightDice` runs the pop loop (`popDice`) for `TWINKLE_MS` if any die on
+  while any throw is rolling, so tumbling flecks never flicker between frames, and y drives a slow
+  per-fleck twinkle. When dice settle `highlightDice` asks the render loop (`popDice`) for `TWINKLE_MS` if any die on
   the table glints, fading x in and advancing y, then nothing renders. Sheen and glint are the fleck's colour a
   quarter of the way to white, so accent flecks gleam in the accent. Sparkle chips are hexagons with soft edges,
   sized so they stay several pixels across and survive mipmapping; the dust under them doesn't glint. Glass adds it to its reflections
@@ -128,7 +149,9 @@ and `remove` act on existing dice by id.
   one more texture. Metal is skipped, since its bump canvas is the paint mask. These are cached in `surface_tints` like the accent tints, keyed by accent and tone. A texture's
   `finish` (roughness, clear coat, iridescence, sheen) is merged into the plastic preset (`materialPreset`); glass
   takes only its iridescence, and a colorset's `iridescence` (0 to 1) sets or adds it on plastic and glass.
-- **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. Each
+- **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. The body
+  opacity is a uniform (`glassOpacity`, behind the `GLASS_OPACITY` define), so glass of every opacity
+  shares programs. Each
   die gets a child mesh with one shared `BackSide` material for its back faces. It is created
   before the die, so its lower id sorts it first at the same depth: per die, back faces then
   front faces, and neither pass overlaps itself on a convex die. `glassShader` (an
@@ -168,6 +191,9 @@ and `remove` act on existing dice by id.
   as a paint mask: numbers are matte and non-metallic. The mask is used close to linearly and metal
   has no bump map, since a bump or a hard threshold at the number edges mirrored stray bits of the
   room as sparkles. `brushedmetal` is a `MeshPhysicalMaterial` with anisotropy.
+- **Bump canvases** upload as one channel (`RedFormat`, a quarter of the bytes): the bump height and
+  the metal paint mask only need red. Labels with glitter flecks keep RGBA, since the flecks' glint and
+  tilt live in the other channels. Glass without flecks never samples that canvas, so it gets no texture.
 - **Glass refraction** (`glass_refraction`, on by default): toggles the `GLASS_REFRACTION` define on
   the cached glass materials, which makes `glassShader` sample the environment for the body (one
   lookup, three with `dispersion`, which also spreads the lens bend per channel so facet edges get
@@ -186,8 +212,9 @@ and `remove` act on existing dice by id.
   diagonal band of the emissive map at `gild_sweep`, one uniform shared by every gilded material; the pop
   loop runs it across once (`SWEEP_MS`) and parks it. Their redrawn labels are freed with the cache. The mesh keeps its
   unlit array in `baseMaterial`, restored (and the sprite removed) before a reroll.
-  The pop scales the meshes (lifted so they stay on the table) on its own short `requestAnimationFrame`
-  loop; the bodies are kinematic and untouched, a new throw ends it, and nothing renders after it.
+  The pop scales the meshes (lifted so they stay on the table) from the render loop (`animatePops`); the
+  bodies are kinematic and untouched, other throws keep popping while a new one rolls, and nothing renders
+  after it. The highlight options are the throw's own (`highlightResult` per throw) or the box's.
 - **Kept and dropped dice** (`markDice`): marks live on the meshes (`mesh.mark`). Settled dice are
   redrawn at once; dice still rolling get theirs in `highlightDice` when they settle, which strikes
   dropped dice (`dropResult`) and highlights and pops the rest. `dropResult` swaps every material
@@ -225,12 +252,11 @@ and `remove` act on existing dice by id.
   the walls at 93% of the half-extent, or further in on short boxes where perspective would
   push the top of a die resting against a wall past the canvas edge. Dice spawn just inside them. During a throw a resize is held back until the dice
   settle, then the walls move and resting dice outside them slide back in.
-- There is no idle render loop. Frames are rendered only while a throw animates, plus a
+- There is no idle render loop. Frames are rendered only while a throw plays back or pops, plus a
   single render after setup, resize, clear and remove. `clearDice({fade})` fades the canvas
   with CSS, so a fade-out renders nothing.
 - Lights use three's physical units (r155+): decay 0 and intensities scaled from
   `light_intensity` so the look matches the old r143 renders; output is sRGB.
 - The physics world uses gravity of `-9.8 * gravity_multiplier` on z, the naive broadphase,
-  14 solver iterations and sleeping (dice sleep after 0.9 s below speed 75). The synchronous
-  simulation and the animated replay use the same fixed step, which is what makes the
-  forced results line up.
+  14 solver iterations and sleeping (dice sleep after 0.9 s below speed 75). The animation is
+  the recorded simulation, so forced results line up without relying on cannon repeating itself.

@@ -45,6 +45,7 @@ const defaultConfig = {
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
+	themeCache: 8, // themes (colorsets) kept ready beyond those on the table; see Several players on one table
 	onRollComplete: () => {}
 }
 ```
@@ -188,6 +189,54 @@ null` clears a mark, and a reroll clears it too. Marks can also be set while the
 (call `markDice` right after `roll()` without awaiting it) so a dropped die never lights up. Results and
 faces never change.
 
+### Several players on one table
+One box (one canvas, one WebGL context) can show everybody's dice, each player's in their own
+colorset, with throws that start while others are still rolling:
+```
+const alice = { name: "alice", foreground: "#ffffff", background: "#2A6FDB", outline: "#000000", material: "glass", glass_opacity: 0.6 }
+const bram = { name: "bram", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone", font: "Georgia, serif" }
+
+await box.preloadTheme(alice)                    // optional, e.g. when a player joins
+box.roll("1d20@17", { colorset: alice, clear: false })
+box.roll("2d6@3,5", { colorset: bram, clear: false, throwFrom: "left" })
+box.add("1d8@6", { colorset: alice })            // add() never clears the table
+box.roll("4d6", { colorset: [alice, bram, "fire", alice] })   // one colorset per die, in order
+```
+- `colorset` takes a custom colorset (as `theme_customColorset`), a stock colorset name (resolved like
+  `theme_colorset`, with the box's `theme_texture` and `theme_material`) or an array of them, used per die
+  in throw order and cycled (sets of one notation are merged by type, so the order is the merged one).
+  Without it a throw uses the box's theme. Dice keep their look until they leave the table, whatever later
+  throws or `updateConfig` use.
+- Everything a colorset sets applies per die: colours, material, texture, `accent`, `rainbow`, `font`,
+  `iridescence`, `glass_opacity`, and two keys that are otherwise box-wide, `glass_edges` and
+  `glass_refraction` (a colorset without them follows the box's, live).
+- `clear: false` keeps the dice on the table and the throws still rolling, and resolves with the results of
+  this throw only (`sets`, `total`, and each die's `id` for `markDice`, `reroll` and `remove`). The default
+  (`clear: true`) clears the table first, as before; throws it cuts short never resolve.
+- `throwFrom` and `highlightResult` can be given per throw too. The rest stays box-wide: the environment,
+  lights and shadows (glass shadows follow the box's theme), pixel ratio, `textureScale`, sounds and
+  physics. The glitter twinkle and gilded sweep are shared: flecks hold still while any die is rolling.
+- `preloadTheme(colorset, types = ["d20"])` loads the colorset's images and font, draws and uploads the
+  label textures of those die types and compiles any new shaders, so the player's first throw starts as
+  fast as any other. A throw whose colorset isn't ready yet starts after it is (`roll()` and `add()` stay
+  synchronous for ready colorsets, so `markDice` can follow them at once).
+- Two colorsets with the same keys (apart from `name`) are the same theme.
+
+Throws run at the same time without disturbing each other's results: each throw is simulated to the end
+when it starts, with the dice of throws still rolling moving along their own recorded paths, so the new
+dice bounce off them but never push them. Forced results are exact for every throw. A throw costs one
+synchronous simulation when it starts (10 to 80 ms for two dice in the bench, more with many dice on the
+table), during which the dice already rolling hold their frame.
+
+**Memory.** Each theme has its own label textures: at the default size about 8 MB for a d20 on glass,
+10 MB on plastic or wood and 38 MB on metal (drawn at full resolution). The box keeps
+the `themeCache` least recently used themes (8 by default) and frees the others once none of their dice
+are on the table, so texture memory stays flat however many colorsets come and go; themes with dice on
+the table are always kept. Programs are shared between colorsets of the same material, so a new colorset
+rarely compiles a shader. A page that keeps every throw on the table holds every theme, so remove old
+throws (`remove(ids)`) or clear the table now and then. For many players on phones, `textureScale: 0.35`
+or a lower `themeCache` cuts texture memory further.
+
 ### Labels
 A colorset's `outline` draws an outline round the numbers in that colour; `outline: "none"` (or
 `false`) leaves it off.
@@ -270,8 +319,8 @@ await Box.preload(["d20", "d6"])     // optional: build textures and compile sha
 Box.dispose()                        // stop listening for resizes, free GPU memory, remove the canvas
 ```
 A roll or `add()` that starts during a fade cancels it. Dice share cached geometry, textures and
-materials, so clearing frees nothing per die and memory stays flat across rolls; `dispose()` frees
-the caches. Call it when the element goes away (for example on a page navigation), since browsers
+materials, so clearing frees nothing per die and memory stays flat across rolls (themes beyond
+`themeCache` are freed as new ones arrive); `dispose()` frees the caches. Call it when the element goes away (for example on a page navigation), since browsers
 cap the number of live WebGL contexts.
 
 ## Full-viewport overlay
@@ -289,6 +338,7 @@ that end up outside a smaller box slide back in.
 ```
 npm run build   # dist/dice-box-threejs.es.js (minified, three and cannon-es bundled) and .umd.js
 npm run bench   # predetermined-roll checks, timing, memory and bundle size in headless Chrome
+node bench/run.mjs --multi   # themes in rotation: texture bytes, programs, crowd frame times, first-throw latency
 node bench/run.mjs main=path/to/old.es.js branch=dist/dice-box-threejs.es.js --profiles=phone,laptop
 ```
 The bench needs Chrome installed. It renders with SwiftShader (software GL), so frame times are
