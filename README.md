@@ -36,9 +36,9 @@ const defaultConfig = {
 	strength: 1, // toss strength of dice
 	maxPixelRatio: 2, // caps devicePixelRatio; 3x phones render at 2x
 	rollingPixelRatio: null, // e.g. 1 to render moving dice at 1x and the settled dice at full ratio
-	textureScale: 0.5, // label texture resolution relative to the original 512px faces
+	textureScale: 0.5, // label texture resolution relative to the original 512px faces (metal always uses full resolution)
 	glass_opacity: 0.35, // how much of what's behind a glass die its body hides, 0 to 1
-	glass_refraction: false, // experimental: true | { ior: 1.5, strength: 0.6, dispersion: 0.02 }
+	glass_refraction: true, // false | { ior: 1.5, strength: 1, dispersion: 0.02 }: the room seen through glass
 	environment: "studio", // or a URL, or { url, intensity: 1, rotation: 0 }; what metal and glass reflect
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
@@ -52,13 +52,21 @@ own `material` key (for example `material: "glass"`); without one it renders wit
 (Phong) material.
 
 Glass dice are translucent: the page or scene behind shows through the tinted body and its back
-faces, while the numbers stay opaque. `glass_opacity` sets how solid the body is, and a custom
+faces, while the numbers stay opaque. Reflections are the faint, untinted ones of real glass (strong
+only at grazing angles, with bright edges and sharp glints); the colour is in the light passing
+through, clear in the middle of a die and deeper towards its rim. `glass_opacity` sets how solid the body is, and a custom
 colorset can set its own:
 ```
 theme_customColorset: { name: "amber", foreground: "#F2743B", background: "#3A2418", outline: "#1A0E07", material: "glass", glass_opacity: 0.5 }
 ```
-Metal and glass reflect a small studio environment the box generates once, the first time a
-colorset needs it.
+Metal, glass, plastic and wood reflect a small studio environment the box generates once, the first
+time a colorset needs it.
+
+### Plastic and wood
+Plastic (`none`, or `plastic`) is glossy acrylic: a clear coat with faint reflections that get stronger
+towards the edges. Stock colorsets keep their colours; they gain that gloss and their sides read a
+little darker than the old fully matte finish. Wood without a texture gets a wood grain drawn in its
+body colour and a satin varnish, so it is told apart from plastic at a glance.
 
 ### Reflection environment
 `environment` swaps the studio for a photo of a room, used only for reflections (and glass
@@ -83,18 +91,34 @@ is satin with a directional sheen. The body colour tints the metal: a gold or si
 gold or silver, dark brown gives copper and black gives gunmetal. Numbers are painted on as matte,
 non-metallic enamel so they stay readable against the reflections.
 
-### Glass refraction (experimental)
-`glass_refraction: true` (or `{ ior, strength, dispersion }`) makes glass bodies also show the
-environment bent through them, tinted by the glass colour; `dispersion` splits the colours slightly.
-It can be switched with `updateConfig({ glass_refraction })`. Flat facets each refract one direction,
-so the effect reads as faceted colour shifts rather than a clear picture of the room.
+### Glass refraction
+Glass bodies show the environment bent through them and filtered by the glass colour, lit from above as
+if it bounced off the table, and shifting across each face like a lens. `glass_refraction: false` turns
+it off (a flat tint, one environment lookup cheaper); `{ ior, strength, dispersion }` tunes it, and
+`dispersion` (0.02 for `true`) adds coloured fringes towards the facet edges at two extra lookups. It
+can be switched with `updateConfig({ glass_refraction })`.
 
 ### Result highlight
 `highlightResult: true` makes the result stand out when a throw (or an `add()` or `reroll()`)
 finishes: the number on the face that landed up glows in its own colour (a dark number gets a light
-halo behind it) and the die pops, a quick 12% scale-up and settle over 350 ms. `{ glow: false }` or
+halo behind it), a soft additive glow sits over it, and the die pops, a quick 12% scale-up and settle
+over 350 ms. `{ glow: false }` or
 `{ pop: false }` turns either off; a number for `glow` sets its strength (default 1). Only how the dice
 are drawn changes, never which face is up or the results, and nothing renders once the pop ends.
+
+### Kept and dropped dice
+After a roll resolves, mark which dice count, for example the lower die of an advantage roll:
+```
+const result = await box.roll("2d20@17,6")
+box.markDice([{ index: 1, state: "dropped" }])   // or { index: 0, state: "kept" }
+```
+`index` is the die's `id` in the results: its place in throw order, counting on across `roll()` and
+`add()` calls until the next `roll()` (the sets of one notation are merged by type, so read it from
+`rolls[].id`). A dropped die has the number that landed up struck through and is dimmed and
+desaturated, and it never gets the result highlight; kept and unmarked dice do, as before. `state:
+null` clears a mark, and a reroll clears it too. Marks can also be set while the dice are still rolling
+(call `markDice` right after `roll()` without awaiting it) so a dropped die never lights up. Results and
+faces never change.
 
 ### Labels
 A colorset's `outline` draws an outline round the numbers in that colour; `outline: "none"` (or
@@ -104,7 +128,8 @@ A colorset's `outline` draws an outline round the numbers in that colour; `outli
 `throwFrom: "any"` throws in a random direction from the edge opposite it. `"sides"` picks the left or
 right wall at random for each throw: the dice come in from just inside it, somewhere in the middle of
 its height, and travel mostly sideways fast enough to cross the box, bounce off the far wall and settle
-near the middle. `"left"` and `"right"` always use that side.
+near the middle. Each die starts in its own spot (further in from the wall, or higher, when many dice
+don't fit), so dice never start inside each other. `"left"` and `"right"` always use that side.
 
 ## Getting Results
 ### There are three ways to get results
