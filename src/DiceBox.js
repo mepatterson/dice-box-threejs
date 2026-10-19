@@ -62,6 +62,7 @@ const HIGHLIGHT_GAIN = 6
 const POP_MS = 350
 const POP_SCALE = 0.12
 const SWEEP_MS = 800
+const TWINKLE_MS = 1100
 
 const smoothstep = (a, b, x) => {
 	const t = Math.min(1, Math.max(0, (x - a) / (b - a)))
@@ -1174,7 +1175,8 @@ class DiceBox {
 		const kept = meshes.filter(mesh => mesh.mark !== "dropped")
 		const styles = glow ? kept.map(mesh => this.DiceFactory.glowResult(mesh, glow, style, color)) : []
 		const sweep = styles.includes("gilded")
-		if (pop || sweep) this.popDice(pop ? kept : [], sweep)
+		const twinkle = this.diceList.some(mesh => mesh.parent && this.DiceFactory.glints(mesh))
+		if (pop || sweep || twinkle) this.popDice(pop ? kept : [], sweep, twinkle)
 	}
 
 	// marks: [{ index, state: "kept" | "dropped" | null }], where index is the die's id in the
@@ -1209,14 +1211,16 @@ class DiceBox {
 
 	// A brief scale-up and settle on the render loop. Bodies are kinematic by now and only the
 	// meshes are scaled (and lifted so they stay on the table), so physics and results are untouched.
-	// With sweep it also runs the gilded shimmer across the numbers, once.
-	popDice(meshes, sweep = false) {
+	// With sweep it also runs the gilded shimmer across the numbers, once. With twinkle, glitter flecks
+	// fade their glints in and shimmer slowly for TWINKLE_MS, then hold still.
+	popDice(meshes, sweep = false, twinkle = false) {
 		this.endPop()
 		const token = ++this.popToken
 		this.popping = meshes
 		const start = performance.now()
 		const gild = this.DiceFactory.gild_sweep
-		const duration = sweep ? Math.max(POP_MS, SWEEP_MS) : POP_MS
+		const glint = this.DiceFactory.glint_state.value
+		const duration = Math.max(POP_MS, sweep ? SWEEP_MS : 0, twinkle ? TWINKLE_MS : 0)
 		const frame = now => {
 			if (token !== this.popToken) return
 			const elapsed = now - start
@@ -1225,6 +1229,7 @@ class DiceBox {
 			const k = t < rise ? 1 - (1 - t / rise) ** 3 : 1 - smoothstep(0, 1, (t - rise) / (1 - rise))
 			this.scaleDice(this.popping, 1 + POP_SCALE * k)
 			if (sweep) gild.value = elapsed < SWEEP_MS ? -0.3 + 1.6 * elapsed / SWEEP_MS : 2
+			if (twinkle) glint.set(smoothstep(0, 0.4, elapsed / TWINKLE_MS), Math.min(elapsed, TWINKLE_MS) / 1000)
 			this.renderer.render(this.scene, this.camera)
 			if (elapsed < duration) requestAnimationFrame(frame)
 			else this.popping = []
@@ -1242,6 +1247,7 @@ class DiceBox {
 	endPop() {
 		++this.popToken
 		this.DiceFactory.gild_sweep.value = 2
+		this.DiceFactory.glint_state.value.x = 0
 		if (this.popping.length) this.scaleDice(this.popping, 1)
 		this.popping = []
 	}

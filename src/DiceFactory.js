@@ -169,35 +169,47 @@ function dimShader(shader) {
 }
 
 // Glitter: where the glint map (a label's bump canvas, red minus blue) has a fleck, the fleck is a
-// tiny mirror tilted its own way (green), so it flashes the room's reflection, tinted by its colour,
-// and a key light when the die turns it just right. Glass adds it to its reflections, the rest to the
-// light. Kept off the numbers, which are black on that canvas.
-const GLINT = { TILT: 0.75, ENV: 2.5, KEY: 4.0 };
-function glintShader(shader, map) {
+// small mirror tilted its own way (green). It always shows a steady sheen that follows the face's
+// light, so it reads as a chip at any angle. On top, once the dice settle (glintState x, 0 while they
+// move so nothing flickers mid-tumble), it brightens smoothly as its tilt brings a key light or a
+// bright part of the room (a blurred lookup) into view, capped, with a slow per-fleck twinkle driven by
+// glintState y. Both are in the fleck's own colour, only a quarter of the way to white, so an accent
+// fleck gleams as a brighter accent and a white one stays white. Glass adds it to its reflections, the rest to the light. Kept off the numbers, which
+// are black on that canvas.
+const GLINT = { TILT: 0.6, STEADY: 0.35, ENV: 1.4, KEY: 1.1, CAP: 1.2, WHITEN: 0.25 };
+function glintShader(shader, map, state) {
 	shader.uniforms.glintMap = { value: map };
+	shader.uniforms.glintState = state;
 	const glint = Object.entries(GLINT).map(([k, v]) => `#define GLINT_${k} ${v.toFixed(3)}`).join('\n');
 	shader.fragmentShader = shader.fragmentShader
-		.replace('void main() {', `${glint}\nuniform sampler2D glintMap;\nvoid main() {`)
+		.replace('void main() {', `${glint}\nuniform sampler2D glintMap;\nuniform vec2 glintState;\nvoid main() {`)
 		.replace('#include <opaque_fragment>', `
 			vec3 diceGlint = vec3( 0.0 );
 			vec4 glintTexel = texture2D( glintMap, vMapUv );
 			float glintAmount = saturate( glintTexel.r - glintTexel.b );
 			if ( glintAmount > 0.02 ) {
 				vec3 glintNormal = normalize( geometryNormal );
-				vec3 glintT = normalize( cross( glintNormal, abs( glintNormal.y ) < 0.9 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 ) ) );
-				vec3 glintB = cross( glintNormal, glintT );
-				float glintTurn = glintTexel.g * 6.2832;
-				vec3 glintFacet = normalize( glintNormal + ( cos( glintTurn ) * glintT + sin( glintTurn ) * glintB ) * GLINT_TILT * ( 0.4 + 0.6 * fract( glintTexel.g * 7.13 ) ) );
-				vec3 glintDir = reflect( - geometryViewDir, glintFacet );
-				vec3 glintRoom = vec3( 0.0 );
-				#ifdef ENVMAP_TYPE_CUBE_UV
-					glintRoom = textureCubeUV( envMap, envMapRotation * inverseTransformDirection( glintDir, viewMatrix ), 0.04 ).rgb * envMapIntensity;
-				#endif
-				float glintKey = pow( saturate( dot( glintDir, normalize( vec3( - 0.3, 0.5, 0.82 ) ) ) ), 30.0 ) + 0.7 * pow( saturate( dot( glintDir, normalize( vec3( 0.5, - 0.2, 0.85 ) ) ) ), 30.0 );
+				vec3 glintKeyDir = normalize( vec3( - 0.3, 0.5, 0.82 ) );
 				float glintPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
-				vec3 glintTint = mix( diffuseColor.rgb / max( glintPeak, 0.0001 ), vec3( 1.0 ), 0.35 );
-				vec3 glintFlash = glintRoom * glintRoom * GLINT_ENV + vec3( glintKey * GLINT_KEY );
-				diceGlint = glintTint * glintFlash * glintAmount;
+				vec3 glintTint = mix( diffuseColor.rgb / max( glintPeak, 0.0001 ), vec3( 1.0 ), GLINT_WHITEN );
+				float glintSteady = GLINT_STEADY * ( 0.35 + 0.65 * saturate( dot( glintNormal, glintKeyDir ) ) );
+				float glintFlash = 0.0;
+				if ( glintState.x > 0.0 ) {
+					vec3 glintT = normalize( cross( glintNormal, abs( glintNormal.y ) < 0.9 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 ) ) );
+					vec3 glintB = cross( glintNormal, glintT );
+					float glintTurn = glintTexel.g * 6.2832;
+					vec3 glintFacet = normalize( glintNormal + ( cos( glintTurn ) * glintT + sin( glintTurn ) * glintB ) * GLINT_TILT * ( 0.4 + 0.6 * fract( glintTexel.g * 7.13 ) ) );
+					vec3 glintDir = reflect( - geometryViewDir, glintFacet );
+					float glintRoom = 0.0;
+					#ifdef ENVMAP_TYPE_CUBE_UV
+						vec3 glintSeen = textureCubeUV( envMap, envMapRotation * inverseTransformDirection( glintDir, viewMatrix ), 0.3 ).rgb * envMapIntensity;
+						glintRoom = smoothstep( 0.3, 1.2, max( glintSeen.r, max( glintSeen.g, glintSeen.b ) ) );
+					#endif
+					float glintKey = smoothstep( 0.82, 1.0, dot( glintDir, glintKeyDir ) ) + 0.6 * smoothstep( 0.86, 1.0, dot( glintDir, normalize( vec3( 0.5, - 0.2, 0.85 ) ) ) );
+					float glintTwinkle = 0.6 + 0.4 * sin( glintState.y * 5.0 + glintTexel.g * 61.0 );
+					glintFlash = min( glintRoom * GLINT_ENV + glintKey * GLINT_KEY, GLINT_CAP ) * glintTwinkle * glintState.x;
+				}
+				diceGlint = glintTint * ( glintSteady + glintFlash ) * glintAmount;
 			}
 			#ifndef GLASS_OPACITY
 				outgoingLight += diceGlint;
@@ -256,6 +268,7 @@ class DiceFactory {
 		this.dice_iridescence = null;
 		this.label_font = null;
 		this.gild_sweep = { value: 2 };
+		this.glint_state = { value: new THREE.Vector2(0, 0) };
 
 		this.material_options = {
 			specular: 0x777777,
@@ -841,12 +854,17 @@ class DiceFactory {
 		return preset;
 	}
 
+	glints(mesh) {
+		return Array.isArray(mesh.material) && mesh.material.some(mat => mat.glintMap);
+	}
+
 	addGlint(mat, map) {
 		const compile = mat.onBeforeCompile;
+		const glintState = this.glint_state;
 		mat.glintMap = map;
 		mat.defines = { ...mat.defines, DICE_GLINT: '' };
 		mat.onBeforeCompile = function (shader, renderer) {
-			glintShader(shader, this.glintMap);
+			glintShader(shader, this.glintMap, glintState);
 			compile.call(this, shader, renderer);
 		};
 	}

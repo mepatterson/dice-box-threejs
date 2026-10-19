@@ -282,36 +282,54 @@ function obsidian(size) {
 	}, { glint: true });
 }
 
-// Glitter resin: a dense scatter of fine flecks and a few larger ones, in white and the accent, each
-// a tiny mirror tilted its own way (the glint canvas), so they flash as the die turns.
+// Glitter resin: chips of white and the accent a few pixels across (hexagonal, with soft edges so they
+// stay whole when the label is mipmapped), a few larger ones and a faint dust of tiny specks. The chips
+// are small mirrors tilted their own way (the glint canvas); the dust doesn't glint.
 function sparkles(size) {
 	const next = random(71);
 	const grid = (n, chance, rmin, rmax) => ({
 		n,
 		cells: Array.from({ length: n * n }, () => ({
-			x: next(), y: next(), r: rmin + (rmax - rmin) * next(), tilt: next(), accent: next() < 0.45, bright: 0.5 + 0.5 * next(), on: next() < chance,
+			x: 0.2 + 0.6 * next(), y: 0.2 + 0.6 * next(), r: rmin + (rmax - rmin) * next(), turn: next() * Math.PI / 3,
+			tilt: next(), accent: next() < 0.45, bright: 0.6 + 0.4 * next(), on: next() < chance,
 		})),
 	});
-	const grids = [grid(42, 0.6, 1.1, 2), grid(13, 0.45, 2.6, 4)];
-	return build(size, [{ color: '#ffffff', glass: 1 }, { color: 'accent', glass: 1 }], 0, (u, v, o) => {
+	const chips = [grid(22, 0.7, 2.8, 4.4), grid(6, 0.55, 6, 8)];
+	const dust = grid(48, 0.6, 0.9, 1.4);
+	const nearest = ({ n, cells }, u, v, hex) => {
+		const cx = Math.floor(u * n), cy = Math.floor(v * n), cell = size / n;
 		let best = 0, fleck = null;
-		for (const { n, cells } of grids) {
-			const cx = Math.floor(u * n), cy = Math.floor(v * n), cell = size / n;
-			for (let dy = -1; dy <= 1; dy++) {
-				for (let dx = -1; dx <= 1; dx++) {
-					const gx = cx + dx, gy = cy + dy;
-					const c = cells[(((gy % n) + n) % n) * n + (((gx % n) + n) % n)];
-					if (!c.on) continue;
-					const d = Math.hypot((gx + c.x) * cell - u * size, (gy + c.y) * cell - v * size);
-					const cover = 1 - smoothstep(c.r - 0.7, c.r + 0.7, d);
-					if (cover > best) { best = cover; fleck = c; }
+		for (let dy = -1; dy <= 1; dy++) {
+			for (let dx = -1; dx <= 1; dx++) {
+				const gx = cx + dx, gy = cy + dy;
+				const c = cells[(((gy % n) + n) % n) * n + (((gx % n) + n) % n)];
+				if (!c.on) continue;
+				const px = (gx + c.x) * cell - u * size, py = (gy + c.y) * cell - v * size;
+				let d = Math.hypot(px, py);
+				if (hex && d < c.r + 2) {
+					const a = Math.atan2(py, px) - c.turn;
+					d *= Math.cos(((a % (Math.PI / 3)) + Math.PI / 3) % (Math.PI / 3) - Math.PI / 6) / Math.cos(Math.PI / 6);
 				}
+				const cover = 1 - smoothstep(c.r - 1.6, c.r + 0.6, d);
+				if (cover > best) { best = cover; fleck = c; }
 			}
 		}
-		if (!fleck) return;
-		o.masks[fleck.accent ? 1 : 0] = best * fleck.bright * (fleck.accent ? 0.8 : 0.55);
-		o.glint = best;
-		o.tilt = fleck.tilt;
+		return [best, fleck];
+	};
+	return build(size, [{ color: '#ffffff', glass: 1 }, { color: 'accent', glass: 1 }], 0, (u, v, o) => {
+		let best = 0, fleck = null;
+		for (const g of chips) {
+			const [cover, c] = nearest(g, u, v, true);
+			if (cover > best) { best = cover; fleck = c; }
+		}
+		if (fleck) {
+			o.masks[fleck.accent ? 1 : 0] = best * fleck.bright * (fleck.accent ? 0.85 : 0.7);
+			o.glint = best;
+			o.tilt = fleck.tilt;
+			return;
+		}
+		const [speck, c] = nearest(dust, u, v, false);
+		if (c) o.masks[c.accent ? 1 : 0] = speck * 0.35;
 	}, { glint: true });
 }
 
