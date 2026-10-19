@@ -2,6 +2,7 @@
 import {DicePreset} from './DicePreset.js'
 import {MATERIALTYPES} from "./const/materialtypes"
 import {DICE_GEOM} from "./const/dice"
+import {woodGrain, makeSurface} from "./surfaces.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -122,38 +123,6 @@ function dielectricShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''));
 }
 
-// A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
-// no texture. It uses its own random numbers so seeded throws repeat.
-function woodGrain(size = 256) {
-	let seed = 7;
-	const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-	const knots = Array.from({ length: 64 }, random);
-	const noise = t => {
-		const i = Math.floor(t), f = t - i, a = knots[((i % 64) + 64) % 64], b = knots[(((i + 1) % 64) + 64) % 64];
-		return a + (b - a) * f * f * (3 - 2 * f);
-	};
-	const canvas = document.createElement('canvas');
-	canvas.width = canvas.height = size;
-	const context = canvas.getContext('2d');
-	const image = context.createImageData(size, size);
-	for (let y = 0; y < size; y++) {
-		for (let x = 0; x < size; x++) {
-			const u = x / size, v = y / size;
-			const warp = Math.sin((u + noise(v * 4) * 0.4) * Math.PI * 2) * 0.05 + (noise(u * 8 + 20) - 0.5) * 0.06;
-			const ring = (v + warp) * 7 + noise(u * 3) * 0.6;
-			const f = ring - Math.floor(ring);
-			const late = Math.pow(Math.sin(f * Math.PI), 6);
-			const streak = noise((v + warp) * 90 + 5) - 0.5;
-			const value = 0.54 - 0.17 * late + 0.14 * streak + 0.04 * (noise(u * 40 + v * 7) - 0.5);
-			const i = (y * size + x) * 4;
-			image.data[i] = image.data[i + 1] = image.data[i + 2] = Math.round(Math.min(1, Math.max(0, value)) * 255);
-			image.data[i + 3] = 255;
-		}
-	}
-	context.putImageData(image, 0, 0);
-	return canvas;
-}
-
 // Dims and desaturates a dropped die.
 function dimShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', `
@@ -204,6 +173,9 @@ class DiceFactory {
 		this.variant_cache = new Map();
 		this.halo_cache = new Map();
 		this.halo_texture = null;
+		this.surfaces = new Map();
+		this.surface_tints = new Map();
+		this.dice_accent = '';
 
 		this.material_options = {
 			specular: 0x777777,
@@ -256,6 +228,9 @@ class DiceFactory {
 		this.variant_cache = new Map();
 		this.halo_cache = new Map();
 		this.halo_texture = null;
+		this.surfaces = new Map();
+		this.surface_tints = new Map();
+		this.wood_grain = null;
 	}
 
 	cachedMaterials() {
@@ -420,15 +395,16 @@ class DiceFactory {
 
 	// Variants are drawn with the colorset the label was made with, even if it has changed since.
 	drawLabel(info, forecolor, variant) {
-		const saved = [this.dice_material, this.body_opacity];
+		const saved = [this.dice_material, this.body_opacity, this.dice_accent];
 		this.dice_material = info.material;
 		this.body_opacity = info.opacity;
+		this.dice_accent = info.accent;
 		try {
 			return variant.strike
 				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant)
 				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
 		} finally {
-			[this.dice_material, this.body_opacity] = saved;
+			[this.dice_material, this.body_opacity, this.dice_accent] = saved;
 		}
 	}
 
@@ -636,7 +612,8 @@ class DiceFactory {
 				materials.push(mat);
 				continue;
 			}
-			const preset = MATERIALTYPES[this.dice_material];
+			let preset = MATERIALTYPES[this.dice_material];
+			if (this.dice_material == 'none' && this.dice_texture_rand && this.dice_texture_rand.finish) preset = { ...preset, ...this.dice_texture_rand.finish };
 			if (this.dice_material == 'glass') {
 				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
 				mat.isGlass = true;
@@ -669,7 +646,7 @@ class DiceFactory {
 			} else {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, this.dice_texture_rand, this.label_color_rand, this.label_outline_rand, this.dice_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
-				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity };
+				mat.diceLabel = { diceobj, labels, index: i, size, margin, forecolor: this.label_color_rand, outline: this.label_outline_rand, backcolor: this.dice_color_rand, texture: this.dice_texture_rand, material: this.dice_material, opacity: this.body_opacity, accent: this.dice_accent };
 				if (isMetal(this.dice_material)) {
 					mat.onBeforeCompile = metalShader;
 					mat.metalnessMap = canvasTextures.bump;
@@ -782,7 +759,8 @@ class DiceFactory {
 			});
 		}
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
-		const finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
+		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
+		if (texture.surface) finish += this.dice_material + this.dice_accent;
 		if (diceobj.shape == 'd4') {
 			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
 		}
@@ -860,6 +838,8 @@ class DiceFactory {
 				contextBump.globalCompositeOperation = 'source-over';
 				contextBump.drawImage(texture.bump, 0, 0, ts, ts);
 			}
+		} else if (texture.surface && !glow) {
+			this.drawSurface(context, contextBump, ts, index, texture.surface, backcolor);
 		} else if (this.dice_material == 'wood' && !glow) {
 			this.drawWoodGrain(context, contextBump, ts, index);
 		} else {
@@ -1084,22 +1064,60 @@ class DiceFactory {
 		bar(contextBump, '#000000', width + (outline ? 10 : 0));
 	}
 
-	// Each face gets the shared grain turned and shifted by its index, so neighbouring faces differ.
+	// Each face gets a shared pattern turned and shifted by its index, so neighbouring faces differ.
+	drawPattern(ctx, image, ts, index) {
+		ctx.save();
+		ctx.translate(ts / 2, ts / 2);
+		ctx.rotate((index * 47 % 360) * Math.PI / 180);
+		ctx.drawImage(image, -ts + (index * 0.37 % 1) * ts * 0.5, -ts, ts * 2, ts * 2);
+		ctx.restore();
+	}
+
 	drawWoodGrain(context, contextBump, ts, index) {
 		if (!this.wood_grain) this.wood_grain = woodGrain();
-		const draw = ctx => {
-			ctx.save();
-			ctx.translate(ts / 2, ts / 2);
-			ctx.rotate((index * 47 % 360) * Math.PI / 180);
-			ctx.drawImage(this.wood_grain, -ts + (index * 0.37 % 1) * ts * 0.5, -ts, ts * 2, ts * 2);
-			ctx.restore();
-		};
 		context.globalCompositeOperation = 'overlay';
-		draw(context);
+		this.drawPattern(context, this.wood_grain, ts, index);
 		context.globalCompositeOperation = 'source-over';
 		contextBump.globalAlpha = 0.2;
-		draw(contextBump);
+		this.drawPattern(contextBump, this.wood_grain, ts, index);
 		contextBump.globalAlpha = 1;
+	}
+
+	// A procedural surface (surfaces.js), generated once per box: its coloured layers over the body
+	// colour, and its height faintly into the bump canvas (except on metal, where that canvas is the
+	// paint mask). The numbers are drawn on top of both, so no grain shows through them.
+	drawSurface(context, contextBump, ts, index, name, backcolor) {
+		if (!this.surfaces.has(name)) this.surfaces.set(name, makeSurface(name));
+		const surface = this.surfaces.get(name);
+		if (!surface) return;
+		const accent = this.dice_accent || `#${new THREE.Color(backcolor).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
+		context.globalCompositeOperation = 'source-over';
+		// in glass the layers are inclusions: partly opaque, so the room still shows through them
+		context.globalAlpha = this.dice_material == 'glass' ? 0.5 : 1;
+		surface.layers.forEach((layer, k) => this.drawPattern(context, layer.color == 'accent' ? this.tintedLayer(name, k, layer, accent) : layer.mask, ts, index));
+		context.globalAlpha = 1;
+		if (surface.height && !isMetal(this.dice_material)) {
+			contextBump.globalAlpha = surface.bump;
+			this.drawPattern(contextBump, surface.height, ts, index);
+			contextBump.globalAlpha = 1;
+		}
+	}
+
+	// An accent layer's white mask in the colorset's accent, made once per colour.
+	tintedLayer(name, k, layer, color) {
+		const key = `${name}|${k}|${color}`;
+		let canvas = this.surface_tints.get(key);
+		if (canvas) return canvas;
+		canvas = document.createElement('canvas');
+		canvas.width = layer.mask.width;
+		canvas.height = layer.mask.height;
+		const ctx = canvas.getContext('2d');
+		ctx.drawImage(layer.mask, 0, 0);
+		ctx.globalCompositeOperation = 'source-in';
+		ctx.fillStyle = color;
+		ctx.fillRect(0, 0, canvas.width, canvas.height);
+		this.surface_tints.set(key, canvas);
+		return canvas;
 	}
 
 	// Doubles the halo, and with knockout leaves the number itself unlit.
@@ -1122,6 +1140,7 @@ class DiceFactory {
 		const material = colordata?.texture?.material || 'none';
 		this.dice_material = material == 'plastic' ? 'none' : material;
 		this.edge_color = colordata.hasOwnProperty("edge") ? colordata.edge:colordata.background;
+		this.dice_accent = colordata.accent || '';
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 	}
 

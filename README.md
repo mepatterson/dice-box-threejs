@@ -28,7 +28,7 @@ const defaultConfig = {
 	sound_dieMaterial: 'plastic',
 	theme_customColorset: null,
 	theme_colorset: "white", // see available colorsets in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/colorsets.js
-	theme_texture: "", // see available textures in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
+	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "obsidian", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
 	theme_material: "glass", // "none" | "metal" | "wood" | "glass" | "plastic"
 	gravity_multiplier: 400,
 	light_intensity: 0.7,
@@ -67,6 +67,28 @@ Plastic (`none`, or `plastic`) is glossy acrylic: a clear coat with faint reflec
 towards the edges. Stock colorsets keep their colours; they gain that gloss and their sides read a
 little darker than the old fully matte finish. Wood without a texture gets a wood grain drawn in its
 body colour and a satin varnish, so it is told apart from plastic at a glance.
+
+### Procedural textures
+Five textures are generated in code instead of loaded from `public/textures`, so they need no asset
+files. Each is drawn in the colorset's own colours, with a finish to match:
+- `bone`: ivory. Faint warm staining, fine grain lines, tiny pores and the odd hairline crack, a satin
+  finish and a very slight bump. Dark brown or near-black numbers read best on it.
+- `swirl`: poured resin or agate. Flowing ribbons of an accent colour (the colorset's `accent`, or a
+  lighter body colour) with a soft haze and thin dark veins, under the usual glossy plastic. With
+  `material: "glass"` the ribbons are milky inclusions inside the glass.
+- `stone`: granite. Dark and light mineral grains over a fine speckle with faint pale veins, a satin
+  to matte finish and a gentle bump, so light rakes across it.
+- `pearl`: mother of pearl. Soft nacre sheets with hints of rose and green, a clear coat, iridescence
+  and a pink sheen at grazing angles. Dark numbers read best on it.
+- `obsidian`: volcanic glass. Tiny bright flecks and faint silvery bands for a near-black body under a
+  mirror-like clear coat. White numbers read best; gold looks richer.
+```
+theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
+theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }
+```
+They default to plastic; `material` (or `theme_material` for a stock colorset) picks another. The
+finish only applies to plastic. Each face shows a different part of the pattern, and the numbers are
+painted over it, so they stay as crisp as on plain dice.
 
 ### Reflection environment
 `environment` swaps the studio for a photo of a room, used only for reflections (and glass

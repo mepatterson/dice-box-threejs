@@ -127,10 +127,11 @@ export class DiceColors {
 			return textures;
 		}
 		
+		// a copy, so a colorset's material never leaks into another that uses the same texture
 		if (TEXTURELIST.hasOwnProperty(texturename)) {
-			return TEXTURELIST[texturename]
+			return { ...TEXTURELIST[texturename] }
 		}
-		return TEXTURELIST['none']
+		return { ...TEXTURELIST['none'] }
 	}
 
 }

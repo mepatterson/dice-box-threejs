@@ -213,6 +213,45 @@ export const TEXTURELIST = {
 		source_bump: '',
 		material: 'metal'
 	},
+	'bone': {
+		name: 'Bone',
+		surface: 'bone',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: { roughness: 0.45, clearcoat: 0.35, clearcoatRoughness: 0.4, envMapIntensity: 0.2 }
+	},
+	'swirl': {
+		name: 'Swirl',
+		surface: 'swirl',
+		source: '',
+		source_bump: '',
+		material: 'none'
+	},
+	'stone': {
+		name: 'Stone',
+		surface: 'stone',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: { roughness: 0.6, clearcoat: 0.2, clearcoatRoughness: 0.45, envMapIntensity: 0.2 }
+	},
+	'pearl': {
+		name: 'Pearl',
+		surface: 'pearl',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.08, iridescence: 1, iridescenceIOR: 1.8, iridescenceThicknessRange: [100, 480], sheen: 1, sheenColor: '#f3d9e6', sheenRoughness: 0.35, envMapIntensity: 0.6 }
+	},
+	'obsidian': {
+		name: 'Obsidian',
+		surface: 'obsidian',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: { roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 0.5 }
+	},
 	'none': {
 		name: 'none',
 		composite: 'source-over',

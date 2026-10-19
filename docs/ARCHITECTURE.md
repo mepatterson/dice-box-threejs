@@ -14,6 +14,7 @@ die land on a value chosen in advance.
 | `src/DiceNotation.js` | Parses `2d20+1d6+3@14,6,2` into sets, an optional constant and forced results. |
 | `src/DicePreset.js` | One die type (labels, values, mass, inertia, scale) built from `const/dice.js`. |
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
+| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, obsidian) and the wood grain. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
 ## How a roll flows
@@ -83,6 +84,16 @@ and `remove` act on existing dice by id.
   Wood with no texture overlays a procedural grain (`woodGrain`, generated once with its own random
   numbers so seeded throws repeat), turned and shifted per face, on the label and faintly on the bump. All are
   transparent with depth testing off, which is fine for convex dice drawn back to front.
+- **Procedural textures** (`surfaces.js`, `drawSurface`): a texture with a `surface` name is generated the first
+  time a label needs it, at 512px with its own seeded value noise, and kept per box (`surfaces`, freed in
+  `dispose()`). It is a few alpha masks, each with a colour (fixed, or `accent`: the colorset's `accent` or the
+  body colour lightened), plus an optional height field. Fixed colours are baked into their masks; accent masks are tinted once per colour
+  (`surface_tints`), then drawn into the label canvas over the body colour, turned and shifted per face like
+  the wood grain; the height goes faintly into the bump canvas (not on metal, where that canvas is the paint mask; glass has no bump). The numbers are drawn
+  last on both canvases, so no grain shows under them. Nothing new reaches the GPU: the pattern lives in the
+  label textures the dice already have. On glass the masks are drawn at half strength, so they read as
+  partly opaque inclusions. A texture's `finish` (roughness, clear coat, iridescence, sheen) is merged into the
+  plastic preset.
 - **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. Each
   die gets a child mesh with one shared `BackSide` material for its back faces. It is created
   before the die, so its lower id sorts it first at the same depth: per die, back faces then
