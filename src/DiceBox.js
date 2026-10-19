@@ -29,6 +29,7 @@ const defaultConfig = {
 	iterationLimit: 1000,
 	maxPixelRatio: 2,
 	textureScale: 0.5,
+	preloadDice: null,
 	onRollComplete: () => {},
 	onRerollComplete: () => {},
 	onAddDiceComplete: () => {},
@@ -184,7 +185,29 @@ class DiceBox {
 
 		this.initialized = true
 
+		if (this.preloadDice) await this.preload(this.preloadDice)
+
 		this.renderer.render(this.scene, this.camera);
+	}
+
+	// Builds the textures and materials for these die types and compiles their shaders ahead of
+	// time (in parallel where the browser supports it), so the first roll starts without a stall.
+	async preload(types = ["d6"]) {
+		const meshes = []
+		for (const type of types) {
+			const mesh = this.DiceFactory.create(type, this.colorData)
+			if (!mesh) continue
+			mesh.castShadow = this.shadows
+			mesh.position.set(0, 0, -1000)
+			meshes.push(mesh)
+			this.scene.add(mesh)
+		}
+		try {
+			if (this.renderer.compileAsync) await this.renderer.compileAsync(this.scene, this.camera)
+			else this.renderer.compile(this.scene, this.camera)
+		} finally {
+			meshes.forEach(mesh => this.scene.remove(mesh))
+		}
 	}
 
 	makeWorldBox(){
