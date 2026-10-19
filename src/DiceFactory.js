@@ -15,46 +15,86 @@ const defaultConfig = {
 
 // Glass writes premultiplied colour so its reflections are added on top of what shows through the
 // body instead of fading with the body's alpha, and a pixel is as opaque as its brightest
-// reflection, so highlights stay solid over a page behind a transparent canvas. Glass scatters
-// little light, so the environment only reflects; faces get more opaque towards grazing angles,
-// and the painted numbers are matte so reflections don't wash them out. With GLASS_REFRACTION the
-// body also shows the environment bent through it (x: ior, y: strength, z: dispersion), tinted
-// by the glass colour.
+// reflection, so highlights stay solid over a page behind a transparent canvas. Reflections are
+// the dielectric ones (about 4% head-on, strong at grazing angles) and never tinted. The tint is
+// in the light passing through: the body shows the room bent through the die (refracted, then
+// bounced off the table, so it is lit from above), filtered by the glass colour over a path that
+// is short in the middle of the die and long at its rim, so the middle is clear and the rim deep.
+// Faces are treated as slightly domed for sharp glints from two key lights.
+// glassRefraction is x: ior, y: strength, z: dispersion. The painted numbers are matte.
 function glassShader(shader, refraction) {
 	shader.uniforms.glassRefraction = refraction;
+	shader.vertexShader = shader.vertexShader
+		.replace('void main() {', 'varying vec3 vGlassOffset;\nvoid main() {')
+		.replace('#include <project_vertex>', '#include <project_vertex>\nvGlassOffset = mvPosition.xyz - ( modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;');
 	shader.fragmentShader = shader.fragmentShader
-		.replace('void main() {', 'uniform vec3 glassRefraction;\nvoid main() {')
+		.replace('void main() {', `uniform vec3 glassRefraction;
+			varying vec3 vGlassOffset;
+			vec3 glassSeen( vec3 dir ) {
+				#ifdef ENVMAP_TYPE_CUBE_UV
+					dir = inverseTransformDirection( dir, viewMatrix );
+					dir.z = abs( dir.z );
+					return textureCubeUV( envMap, envMapRotation * dir, 0.18 ).rgb;
+				#else
+					return vec3( 0.5 );
+				#endif
+			}
+			void main() {`)
 		.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''))
 		.replace('#include <opaque_fragment>', `
-			float glassPaint = smoothstep( 0.9, 1.0, diffuseColor.a );
-			diffuseColor.a += ( 1.0 - diffuseColor.a ) * 0.7 * pow( 1.0 - saturate( dot( geometryNormal, geometryViewDir ) ), 2.5 );
+			float glassBodyAlpha = GLASS_OPACITY;
+			float glassPaint = saturate( ( diffuseColor.a - glassBodyAlpha ) / max( 1.0 - glassBodyAlpha, 0.0001 ) );
+			float glassRim = length( vGlassOffset.xy ) / max( length( vGlassOffset ), 0.0001 );
+			float glassFacing = saturate( dot( geometryNormal, geometryViewDir ) );
+			float glassDepth = max( glassRim * glassRim, 1.0 - glassFacing );
 			vec3 glassSpecular = totalSpecular;
-			#ifdef USE_CLEARCOAT
-				glassSpecular = glassSpecular * ( 1.0 - material.clearcoat * Fcc ) + ( clearcoatSpecularDirect + clearcoatSpecularIndirect ) * material.clearcoat;
-			#endif
-			vec3 glassBody = outgoingLight - glassSpecular;
-			#if defined( GLASS_REFRACTION ) && defined( ENVMAP_TYPE_CUBE_UV )
-				vec3 glassTint = diffuseColor.rgb / max( max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) ), 0.0001 );
-				vec3 glassDir = inverseTransformDirection( refract( - geometryViewDir, geometryNormal, 1.0 / glassRefraction.x ), viewMatrix );
-				vec3 glassSeen = textureCubeUV( envMap, envMapRotation * glassDir, 0.12 ).rgb;
+			vec3 glassPainted = outgoingLight - glassSpecular;
+			float glassPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
+			vec3 glassTint = diffuseColor.rgb / max( glassPeak, 0.0001 );
+			vec3 glassFilter = pow( glassTint, vec3( 0.8 + 0.7 * glassDepth ) ) * pow( glassPeak, 0.35 + 0.25 * glassDepth );
+			vec3 glassLight = vec3( 0.6 );
+			vec2 glassLens = vGlassOffset.xy / max( length( vGlassOffset ), 0.0001 );
+			#ifdef GLASS_REFRACTION
+				vec3 glassDir = refract( - geometryViewDir, geometryNormal, 1.0 / glassRefraction.x );
+				glassLight = glassSeen( normalize( glassDir - vec3( glassLens * 0.9, 0.0 ) ) );
 				if ( glassRefraction.z > 0.0 ) {
-					glassDir = inverseTransformDirection( refract( - geometryViewDir, geometryNormal, 1.0 / ( glassRefraction.x - glassRefraction.z ) ), viewMatrix );
-					glassSeen.r = textureCubeUV( envMap, envMapRotation * glassDir, 0.12 ).r;
-					glassDir = inverseTransformDirection( refract( - geometryViewDir, geometryNormal, 1.0 / ( glassRefraction.x + glassRefraction.z ) ), viewMatrix );
-					glassSeen.b = textureCubeUV( envMap, envMapRotation * glassDir, 0.12 ).b;
+					float spread = glassRefraction.z * 12.0;
+					glassLight.r = glassSeen( normalize( refract( - geometryViewDir, geometryNormal, 1.0 / ( glassRefraction.x - glassRefraction.z ) ) - vec3( glassLens * 0.9 * ( 1.0 - spread ), 0.0 ) ) ).r;
+					glassLight.b = glassSeen( normalize( refract( - geometryViewDir, geometryNormal, 1.0 / ( glassRefraction.x + glassRefraction.z ) ) - vec3( glassLens * 0.9 * ( 1.0 + spread ), 0.0 ) ) ).b;
 				}
-				glassBody += glassTint * glassSeen * glassRefraction.y * envMapIntensity * ( 1.0 - glassPaint );
+				glassLight = mix( vec3( 0.6 ), glassLight * envMapIntensity * 2.2, glassRefraction.y );
 			#endif
+			vec3 glassBody = glassFilter * glassLight + glassPainted * 0.25;
+			glassBodyAlpha *= mix( 0.7, 1.45, glassDepth );
+			#ifdef GLASS_EDGE
+				glassBody = mix( glassFilter, vec3( 1.0 ), 0.3 ) * glassLight * 1.6;
+				glassBodyAlpha = mix( glassBodyAlpha, 1.0, 0.5 );
+			#endif
+			#ifdef GLASS_INTERIOR
+				glassBody = glassFilter * glassLight * 0.6;
+			#endif
+			glassBodyAlpha = saturate( glassBodyAlpha );
+			float glassShine = max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) );
+			glassSpecular *= smoothstep( 0.015, 0.2, glassShine ) * 1.4;
+			#ifndef GLASS_INTERIOR
+				vec3 glassDome = normalize( geometryNormal + vec3( glassLens * 0.45, 0.0 ) );
+				float glassGlint = pow( saturate( dot( glassDome, normalize( vec3( - 0.35, 0.45, 0.82 ) + geometryViewDir ) ) ), 250.0 ) * 2.5;
+				glassGlint += pow( saturate( dot( glassDome, normalize( vec3( 0.55, - 0.25, 0.8 ) + geometryViewDir ) ) ), 250.0 ) * 1.2;
+				glassSpecular += glassGlint * ( 1.0 - glassPaint );
+			#endif
+			vec3 glassColor = mix( glassBody, glassPainted, glassPaint );
+			float glassCover = mix( glassBodyAlpha, 1.0, glassPaint );
 			glassSpecular *= 1.0 - 0.8 * glassPaint;
-			float glassAlpha = diffuseColor.a + ( 1.0 - diffuseColor.a ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
-			gl_FragColor = vec4( ( glassBody * diffuseColor.a + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
+			float glassAlpha = glassCover + ( 1.0 - glassCover ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
+			gl_FragColor = vec4( ( glassColor * glassCover + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
 		`);
 }
 
 // Metal reflects the environment tinted by the body colour, so a dark body still reads as metal
 // (dark brown becomes copper, black becomes gunmetal) by lifting its brightest channel to
 // METAL_FLOOR. The label's bump canvas doubles as a paint mask: where the numbers are drawn
-// (black) the surface is matte non-metallic paint, so they stay readable against reflections.
+// (black) the surface is matte non-metallic paint, so they stay readable against reflections. The
+// mask is used close to linearly so its edges stay as smooth as the texture filtering makes them.
 const METAL_FLOOR = 0.42;
 function metalShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', `
@@ -62,7 +102,7 @@ function metalShader(shader) {
 		float metalPaint = 0.0;
 		#ifdef USE_METALNESSMAP
 			vec4 texelMetalness = texture2D( metalnessMap, vMetalnessMapUv );
-			metalPaint = 1.0 - smoothstep( 0.03, 0.15, dot( texelMetalness.rgb, vec3( 0.3333 ) ) );
+			metalPaint = 1.0 - smoothstep( 0.25, 0.95, dot( texelMetalness.rgb, vec3( 0.3333 ) ) );
 		#endif
 		float metalPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
 		vec3 metalTint = metalPeak < 0.001 ? vec3( ${METAL_FLOOR.toFixed(3)} ) : diffuseColor.rgb * ( max( metalPeak, ${METAL_FLOOR.toFixed(3)} ) / metalPeak );
@@ -73,6 +113,43 @@ function metalShader(shader) {
 }
 
 export const isMetal = material => /metal/.test(material || '');
+
+// Plastic and wood only reflect the environment; its diffuse light would wash out their colour.
+function dielectricShader(shader) {
+	shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''));
+}
+
+// A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
+// no texture. It uses its own random numbers so seeded throws repeat.
+function woodGrain(size = 256) {
+	let seed = 7;
+	const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+	const knots = Array.from({ length: 64 }, random);
+	const noise = t => {
+		const i = Math.floor(t), f = t - i, a = knots[((i % 64) + 64) % 64], b = knots[(((i + 1) % 64) + 64) % 64];
+		return a + (b - a) * f * f * (3 - 2 * f);
+	};
+	const canvas = document.createElement('canvas');
+	canvas.width = canvas.height = size;
+	const context = canvas.getContext('2d');
+	const image = context.createImageData(size, size);
+	for (let y = 0; y < size; y++) {
+		for (let x = 0; x < size; x++) {
+			const u = x / size, v = y / size;
+			const warp = Math.sin((u + noise(v * 4) * 0.4) * Math.PI * 2) * 0.05 + (noise(u * 8 + 20) - 0.5) * 0.06;
+			const ring = (v + warp) * 7 + noise(u * 3) * 0.6;
+			const f = ring - Math.floor(ring);
+			const late = Math.pow(Math.sin(f * Math.PI), 6);
+			const streak = noise((v + warp) * 90 + 5) - 0.5;
+			const value = 0.54 - 0.17 * late + 0.14 * streak + 0.04 * (noise(u * 40 + v * 7) - 0.5);
+			const i = (y * size + x) * 4;
+			image.data[i] = image.data[i + 1] = image.data[i + 2] = Math.round(Math.min(1, Math.max(0, value)) * 255);
+			image.data[i + 3] = 255;
+		}
+	}
+	context.putImageData(image, 0, 0);
+	return canvas;
+}
 
 class DiceFactory {
 	static dice = {}
@@ -96,6 +173,7 @@ class DiceFactory {
 		this.envRotation = new THREE.Euler();
 		this.envIntensity = 1;
 		this.refraction = { value: new THREE.Vector3(1.5, 0, 0) };
+		this.maxAnisotropy = 1;
 		this.glow_cache = new Map();
 
 		this.material_options = {
@@ -165,7 +243,7 @@ class DiceFactory {
 	setRefraction(options) {
 		const on = Boolean(options);
 		const o = typeof options === 'object' && options ? options : {};
-		this.refraction.value.set(o.ior ?? 1.5, on ? (o.strength ?? 0.6) : 0, o.dispersion === true ? 0.02 : (o.dispersion || 0));
+		this.refraction.value.set(o.ior ?? 1.5, on ? (o.strength ?? 1) : 0, o.dispersion === true ? 0.02 : (o.dispersion || 0));
 		this.cachedMaterials().forEach(mat => {
 			if (!mat.isGlass || ('GLASS_REFRACTION' in mat.defines) === on) return;
 			if (on) mat.defines.GLASS_REFRACTION = '';
@@ -387,16 +465,18 @@ class DiceFactory {
 			}
 			const preset = MATERIALTYPES[this.dice_material];
 			if (this.dice_material == 'glass') {
-				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset));
+				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
 				mat.isGlass = true;
 				if (this.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';
-			} else if (preset && preset.anisotropy) {
+			} else if (preset && (preset.anisotropy || preset.clearcoat)) {
 				mat = new THREE.MeshPhysicalMaterial(preset);
 			} else if (preset) {
 				mat = new THREE.MeshStandardMaterial(preset);
 			} else {
 				mat = new THREE.MeshPhongMaterial(this.material_options);
 			}
+
+			if (this.dice_material == 'none' || this.dice_material == 'wood') mat.onBeforeCompile = dielectricShader;
 
 			let canvasTextures;
 			if (i==0) { //edge
@@ -407,7 +487,10 @@ class DiceFactory {
 				canvasTextures = this.createTextMaterial(diceobj, labels, i, size, margin, texture, this.label_color_rand, this.label_outline_rand, this.edge_color_rand, allowcache);
 				mat.map = canvasTextures.composite;
 				// flat bevels would light up end to end like wires
-				if (this.dice_material == 'glass') mat.envMapIntensity = 0.4;
+				if (this.dice_material == 'glass') {
+					mat.envMapIntensity = 0.7;
+					mat.defines.GLASS_EDGE = '';
+				}
 				if (isMetal(this.dice_material)) mat.onBeforeCompile = metalShader;
 
 			} else {
@@ -419,7 +502,8 @@ class DiceFactory {
 					mat.metalnessMap = canvasTextures.bump;
 				}
 
-				if (this.bumpMapping && this.dice_material != 'glass') {
+				// on metal a bump at the number edges would mirror stray bits of the room as sparkles
+				if (this.bumpMapping && this.dice_material != 'glass' && !isMetal(this.dice_material)) {
 					if (false) {
 						mat.bumpScale = 0.5;
 					} else {
@@ -459,31 +543,35 @@ class DiceFactory {
 		return materials;
 	}
 
-	makeGlass(mat) {
+	makeGlass(mat, opacity) {
 		mat.premultipliedAlpha = true;
+		mat.defines = { ...mat.defines, GLASS_OPACITY: opacity.toFixed(3) };
 		mat.onBeforeCompile = shader => glassShader(shader, this.refraction);
 		return mat;
 	}
 
-	// The back faces of a glass die, drawn as one batch: fainter than the faces and glowing with a
-	// stronger version of the die's colour, like light caught inside tinted glass.
+	// The back faces of a glass die, drawn as one batch: fainter than the faces, deeper in colour and
+	// catching faint internal reflections.
 	interiorMaterial() {
 		const key = `interior|${this.dice_color_rand}|${this.body_opacity}`;
 		let mat = this.mesh_materials_cache.get(key);
 		if (mat) return mat;
 		const color = new THREE.Color(this.dice_color_rand);
-		const hsl = color.getHSL({});
 		mat = this.makeGlass(new THREE.MeshStandardMaterial({
 			color: color,
-			emissive: new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 1.6), Math.min(0.6, Math.max(0.4, hsl.l))),
-			emissiveIntensity: 1.5,
 			roughness: MATERIALTYPES.glass.roughness,
 			metalness: 0,
 			side: THREE.BackSide,
 			transparent: true,
 			depthTest: false,
-			opacity: this.body_opacity * 0.5
-		}));
+			opacity: this.body_opacity * 0.5,
+			envMapIntensity: 0.6
+		}), this.body_opacity * 0.5);
+		mat.defines.GLASS_INTERIOR = '';
+		mat.isGlass = true;
+		if (this.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';
+		mat.envBase = mat.envMapIntensity;
+		this.applyEnvironment(mat);
 		this.mesh_materials_cache.set(key, mat);
 		return mat;
 	}
@@ -521,10 +609,11 @@ class DiceFactory {
 			});
 		}
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
+		const finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
 		if (diceobj.shape == 'd4') {
-			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity;
+			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
 		}
-		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor + opacity;
+		return diceobj.type + textCache + index + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
 	}
 
 	// With glow ({text}: only that number on a d4, or null for the face's label) it draws just the
@@ -570,8 +659,9 @@ class DiceFactory {
 
 		// Labels are laid out on a ts-sized square; the canvas itself can be smaller. Mipmapping
 		// samples well below the full size at the sizes dice are drawn, and each halving saves
-		// three quarters of the texture memory.
-		const px = Math.max(32, ts * this.textureScale);
+		// three quarters of the texture memory. Metal keeps full resolution: its number edges sit
+		// against sharp, high-contrast reflections.
+		const px = Math.max(32, ts * (isMetal(this.dice_material) ? 1 : this.textureScale));
 		canvas.width = canvas.height = px;
 		canvasBump.width = canvasBump.height = px;
 		context.scale(px / ts, px / ts);
@@ -596,6 +686,8 @@ class DiceFactory {
 				contextBump.globalCompositeOperation = 'source-over';
 				contextBump.drawImage(texture.bump, 0, 0, ts, ts);
 			}
+		} else if (this.dice_material == 'wood' && !glow) {
+			this.drawWoodGrain(context, contextBump, ts, index);
 		} else {
 			context.globalCompositeOperation = 'source-over';
 		}
@@ -773,10 +865,12 @@ class DiceFactory {
 
 		var compositetexture = new THREE.CanvasTexture(canvas);
 		compositetexture.colorSpace = THREE.SRGBColorSpace;
+		compositetexture.anisotropy = this.maxAnisotropy;
 		var bumpMap;
 		if (glow) return {composite:compositetexture};
 		if (!isTexture) {
 			bumpMap = new THREE.CanvasTexture(canvasBump);
+			bumpMap.anisotropy = this.maxAnisotropy;
 		} else {
 			bumpMap = null;
 		}
@@ -789,6 +883,24 @@ class DiceFactory {
 		}
 
 		return {composite:compositetexture,bump:bumpMap};
+	}
+
+	// Each face gets the shared grain turned and shifted by its index, so neighbouring faces differ.
+	drawWoodGrain(context, contextBump, ts, index) {
+		if (!this.wood_grain) this.wood_grain = woodGrain();
+		const draw = ctx => {
+			ctx.save();
+			ctx.translate(ts / 2, ts / 2);
+			ctx.rotate((index * 47 % 360) * Math.PI / 180);
+			ctx.drawImage(this.wood_grain, -ts + (index * 0.37 % 1) * ts * 0.5, -ts, ts * 2, ts * 2);
+			ctx.restore();
+		};
+		context.globalCompositeOperation = 'overlay';
+		draw(context);
+		context.globalCompositeOperation = 'source-over';
+		contextBump.globalAlpha = 0.2;
+		draw(contextBump);
+		contextBump.globalAlpha = 1;
 	}
 
 	// Doubles the halo, and with knockout leaves the number itself unlit.
@@ -808,7 +920,8 @@ class DiceFactory {
 		this.dice_color = colordata.background;
 		this.label_outline = colordata.outline;
 		this.dice_texture = colordata.texture;
-		this.dice_material = colordata?.texture?.material || 'none';
+		const material = colordata?.texture?.material || 'none';
+		this.dice_material = material == 'plastic' ? 'none' : material;
 		this.edge_color = colordata.hasOwnProperty("edge") ? colordata.edge:colordata.background;
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 	}

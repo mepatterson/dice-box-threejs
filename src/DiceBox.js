@@ -33,7 +33,7 @@ const defaultConfig = {
 	rollingPixelRatio: null,
 	textureScale: 0.5,
 	glass_opacity: 0.35,
-	glass_refraction: false,
+	glass_refraction: true,
 	environment: "studio",
 	highlightResult: false,
 	throwFrom: "any",
@@ -187,6 +187,7 @@ class DiceBox {
 		this.renderer.shadowMap.type = THREE.PCFShadowMap;
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 		this.renderer.setClearColor(0x000000, 0);
+		this.DiceFactory.maxAnisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
 
 		this.setDimensions(this.dimensions);
 

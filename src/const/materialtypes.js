@@ -1,6 +1,11 @@
 export const MATERIALTYPES = {
   'none': {
-    name: 'Plastic'
+    name: 'Plastic',
+    roughness: 0.4,
+    metalness: 0,
+    clearcoat: 1,
+    clearcoatRoughness: 0.08,
+    envMapIntensity: 0.25
   },
   'perfectmetal': {
     name: 'Perfect Metal',
@@ -27,17 +32,17 @@ export const MATERIALTYPES = {
   'wood': {
     name: 'Wood',
     color: 0xdddddd,
-    roughness: 0.9,
+    roughness: 0.75,
     metalness: 0.0,
-    envMapIntensity: 0
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.35,
+    envMapIntensity: 0.2
   },
   'glass': {
     name: 'Glass',
     color: 0xffffff,
-    roughness: 0.05,
+    roughness: 0.07,
     metalness: 0.0,
-    clearcoat: 1,
-    clearcoatRoughness: 0.02,
-    envMapIntensity: 1
+    envMapIntensity: 0.9
   }
 }
