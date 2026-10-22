@@ -66,8 +66,8 @@ const PHYSICS = {
 	heavy: { gravity_multiplier: 600, strength: 1.8, friction: 0.75, damping: 0.25, settleTime: 0.45, restitution: { desk: 0.3, wall: 0.45, dice: 0.35 } },
 }
 const physicsFlag = PHYSICS[flags.physics] ?? {}
-// Viewports for --spread, as phone, tablet and tablet beside another app
-const SPREAD_SIZES = { phone: [390, 844], tablet: [820, 1180], "tablet-half": [600, 1000] }
+// Viewports for --spread: phone, tablet, tablet beside another app, and a short box
+const SPREAD_SIZES = { phone: [390, 844], tablet: [820, 1180], "tablet-half": [600, 1000], "phone-landscape": [844, 390] }
 
 const TYPES = { ".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html", ".webp": "image/webp", ".png": "image/png", ".mp3": "audio/mpeg" }
 
@@ -331,6 +331,7 @@ async function runSpread() {
 				"across at first touch p10 / p50 / p90": q3(rows.flatMap(x => x.landAcross)),
 				"across at 100 / 300 / 600 ms (median)": ["across100", "across300", "across600"].map(k => quantileOf(rows.flatMap(x => x[k]), 0.5).toFixed(2)).join(" / "),
 				"peak height (radii, max)": Math.max(...rows.map(x => x.peakHeight)).toFixed(1),
+				"last die all the way in (ms, max)": Math.max(...rows.map(x => x.allIn)).toFixed(0),
 				"once in: biggest swell / px past canvas edge": `${Math.max(...rows.map(x => x.swell)).toFixed(2)}x / ${Math.max(...rows.map(x => x.poke)).toFixed(0)}`,
 				"settle (ms avg)": avg(rows.map(x => x.settleMs)).toFixed(0),
 			} }

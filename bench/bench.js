@@ -360,19 +360,23 @@ function throwMetrics(box, cur) {
 	// (perspective), and how far (CSS px) its bounding sphere pokes past the canvas edge.
 	const camera = box.camera.position.z
 	const px = box.container.clientWidth / (2 * box.display.containerWidth)
-	let swell = 1, poke = 0
+	let swell = 1, poke = 0, allIn = 0
 	cur.dice.forEach((m, j) => {
 		let entered = false
-		for (const f of frames) {
+		frames.forEach((f, k) => {
 			const [x, y, z] = f.subarray(j * 7, j * 7 + 3)
-			entered ||= Math.abs(x) <= halfW - r[j]
-			if (!entered) continue
+			if (!entered && Math.abs(x) <= halfW - r[j]) {
+				entered = true
+				allIn = Math.max(allIn, k * dt * 1000)
+			}
+			if (!entered) return
 			const s = camera / (camera - z)
 			swell = Math.max(swell, s)
 			poke = Math.max(poke, ((Math.abs(x) + r[j]) * s - box.display.containerWidth) * px, ((Math.abs(y) + r[j]) * s - box.display.containerHeight) * px)
-		}
+		})
 	})
 	return {
+		allIn,
 		swell,
 		poke,
 		n,
