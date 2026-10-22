@@ -42,6 +42,7 @@ if (params.get("light")) document.body.classList.add("light")
 if (params.get("plain")) document.querySelector("main").hidden = true
 
 const gpu = trackTextures()
+const media = trackMedia()
 const { default: DiceBox } = await import(params.get("bundle"))
 
 // Counts the bytes of every live WebGL texture (all mip levels and cube faces), so builds can be
@@ -84,6 +85,16 @@ function trackTextures() {
 		return gl
 	}
 	return { bytes: () => [...sizes.values()].reduce((sum, m) => sum + [...m.values()].reduce((a, b) => a + b, 0), 0), count: () => sizes.size }
+}
+
+// Counts audio elements made and played, so a build can show it loads no sound of its own.
+function trackMedia() {
+	const counts = { made: 0, played: 0 }
+	const Original = window.Audio
+	window.Audio = function (...a) { counts.made++; return new Original(...a) }
+	const play = HTMLMediaElement.prototype.play
+	HTMLMediaElement.prototype.play = function (...a) { counts.played++; return play.apply(this, a) }
+	return counts
 }
 
 // Twelve player themes: glass, plastic, metal and wood, plain and with every procedural texture.
@@ -367,11 +378,18 @@ window.bench = {
 		window.box = box
 		window.stats = instrument(box)
 		window.simMs = []
+		window.recorded = 0
+		window.reported = 0
+		if (params.get("impacts") && "onImpact" in box) box.onImpact = () => { window.reported++ }
 		if (typeof box.simulate === "function") {
 			const simulate = box.simulate.bind(box)
 			box.simulate = (...a) => {
 				const t = performance.now()
-				try { return simulate(...a) } finally { window.simMs.push(performance.now() - t) }
+				try {
+					const out = simulate(...a)
+					window.recorded += out.impacts ? out.impacts.steps.length : 0
+					return out
+				} finally { window.simMs.push(performance.now() - t) }
 			}
 		}
 		return { initMs: performance.now() - t0 }
@@ -421,6 +439,59 @@ window.bench = {
 		}
 		box.clearDice()
 		return records
+	},
+
+	// What onImpact reports for throws of each notation, `runs` times each: impacts per throw, how many
+	// are die-on-die, their speeds, the shortest gap between two reports of one throw, `at`, and whether
+	// every recorded impact was reported (one due more than a quarter second before its frame ran, as
+	// after a stall, is dropped). Then two throws in different colorsets at once, the second with its
+	// own listener, and a check
+	// that no audio element was made or played.
+	async impacts({ notations = ["1d20", "2d20", "10d6"], runs = 6, impact = {}, seed = 13, raw = false } = {}) {
+		const box = window.box
+		if (!("onImpact" in box)) return { supported: false }
+		Math.random = mulberry32(seed)
+		Object.assign(box.impact, impact)
+		const stats = window.stats
+		const out = { supported: true, throws: {}, raw: [] }
+		const watch = () => {
+			const hits = []
+			box.onImpact = hit => hits.push({ ...hit, t: performance.now() })
+			window.recorded = 0
+			return hits
+		}
+		for (const notation of notations) {
+			const rows = []
+			for (let i = 0; i < runs; i++) {
+				const hits = watch()
+				const run = await timed(box, stats, () => box.roll(notation))
+				const gaps = hits.slice(1).map((h, k) => h.t + h.at * 1000 - hits[k].t - hits[k].at * 1000)
+				if (raw) out.raw.push(...hits.map(h => Math.round(h.speed * box.impact.full)))
+				rows.push({
+					reported: hits.length, recorded: window.recorded, die: hits.filter(h => h.die).length,
+					speeds: hits.map(h => h.speed), at: hits.map(h => h.at), x: hits.map(h => h.x),
+					minGapMs: gaps.length ? Math.min(...gaps) : null, avgFrameMs: run.avgFrameMs, simMs: window.simMs.at(-1),
+					inRange: hits.every(h => h.speed >= 0 && h.speed <= 1 && h.x >= 0 && h.x <= 1 && h.at >= 0 && h.at < 0.05 && typeof h.die === "boolean"),
+				})
+			}
+			out.throws[notation] = rows
+		}
+		// a first throw in each colorset, so a shader compile stalling playback (and dropping its late
+		// impacts) doesn't count against the concurrent throws
+		await box.roll("1d20", { colorset: THEMES[0] })
+		await box.roll("1d6", { colorset: THEMES[8] })
+		const hits = watch()
+		const own = []
+		box.clearDice()
+		await Promise.all([
+			box.roll("2d20", { colorset: THEMES[0], clear: false }),
+			new Promise(r => setTimeout(r, 120)).then(() => box.roll("3d6", { colorset: THEMES[8], clear: false, throwFrom: "left", onImpact: hit => own.push(hit) })),
+		])
+		out.concurrent = { reported: hits.length + own.length, own: own.length, recorded: window.recorded, die: hits.filter(h => h.die).length + own.filter(h => h.die).length }
+		box.onImpact = null
+		box.clearDice()
+		out.audio = { ...media }
+		return out
 	},
 
 	// Renders while nothing moves, then a fade-out clear if the build has one.

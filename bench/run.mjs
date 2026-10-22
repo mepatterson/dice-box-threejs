@@ -10,6 +10,9 @@
 //   --no-shots / --shots-only   skip or only take the showcase screenshots
 //   --multi                     multi-theme memory, crowd frame times and first-throw latency instead
 //   --multi --table             only a screenshot of eight players' dice thrown at once
+//   --impacts                   what onImpact reports per throw size, concurrent throws and audio made
+//   --impacts --raw             also the impact speeds before normalizing (to tune impact.min and full)
+//   --on-impact                 run the profiles with an onImpact listener attached
 //
 // The dice box is a full-viewport overlay (position: fixed; inset: 0) over page content, the way
 // an app that animates server-decided rolls would mount it. Chrome runs headless with
@@ -108,7 +111,7 @@ async function openPage(browser, port, index, profile, query = "") {
 async function runProfile(browser, port, index, name) {
 	const profile = PROFILES[name]
 	const rolls = Number(flags.rolls || profile.rolls)
-	const { context, page } = await openPage(browser, port, index, profile)
+	const { context, page } = await openPage(browser, port, index, profile, flags["on-impact"] ? "&impacts=1" : "")
 	const cdp = await context.newCDPSession(page)
 	const report = { profile: name, ...profile }
 	report.heapBeforeInit = await heap(cdp)
@@ -247,6 +250,62 @@ const browser = await chromium.launch({
 if (flags.multi) {
 	await runMulti()
 	process.exit(0)
+}
+
+if (flags.impacts) {
+	await runImpacts()
+	process.exit(0)
+}
+
+async function runImpacts() {
+	const names = flags.profiles ? String(flags.profiles).split(",") : ["laptop", "phone"]
+	const reports = []
+	for (let i = 0; i < builds.length; i++) for (const name of names) {
+		const { context, page } = await multiPage(i, PROFILES[name])
+		const r = await page.evaluate(o => bench.impacts(o), { raw: Boolean(flags.raw), runs: Number(flags.rolls || 6), impact: flags.raw ? { min: 0, full: 100000, interval: 0 } : {} })
+		reports.push({ label: `${builds[i].label} ${name}`, r })
+		await context.close()
+	}
+	await browser.close()
+	server.close()
+	await mkdir(outDir, { recursive: true })
+	await writeFile(join(outDir, "report-impacts.json"), JSON.stringify(reports, null, 2))
+	const spread = list => {
+		if (!list.length) return "-"
+		const sorted = [...list].sort((a, b) => a - b)
+		const at = q => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
+		return `${at(0.1).toFixed(2)} / ${at(0.5).toFixed(2)} / ${at(0.9).toFixed(2)}`
+	}
+	const supported = reports.filter(x => x.r.supported)
+	for (const notation of Object.keys(supported[0]?.r.throws ?? {})) {
+		table(`onImpact, ${notation}`, supported.map(({ label, r }) => {
+			const rows = r.throws[notation]
+			const counts = rows.map(x => x.reported)
+			return { label, values: {
+				"impacts per throw (avg, min-max)": `${avg(counts).toFixed(1)} (${Math.min(...counts)}-${Math.max(...counts)})`,
+				"die-on-die per throw (avg)": avg(rows.map(x => x.die)).toFixed(1),
+				"reported / recorded": `${counts.reduce((a, b) => a + b, 0)} / ${rows.reduce((a, x) => a + x.recorded, 0)}`,
+				"speed p10 / p50 / p90": spread(rows.flatMap(x => x.speeds)),
+				"at p10 / p50 / p90 (s)": spread(rows.flatMap(x => x.at)),
+				"closest two reports (min ms)": ms(Math.min(...rows.map(x => x.minGapMs ?? Infinity))),
+				"fields in range": rows.every(x => x.inRange),
+				"frame interval (avg)": ms(avg(rows.map(x => x.avgFrameMs))),
+				"simulating (avg)": ms(avg(rows.map(x => x.simMs))),
+			} }
+		}))
+	}
+	if (supported.length) table("onImpact, 2d20 and 3d6 thrown 120 ms apart in two colorsets", supported.map(({ label, r }) => ({ label, values: {
+		"reported / recorded": `${r.concurrent.reported} / ${r.concurrent.recorded}`,
+		"to the 3d6 throw's own listener": r.concurrent.own,
+		"die-on-die": r.concurrent.die,
+		"audio elements made / played": `${r.audio.made} / ${r.audio.played}`,
+	} })))
+	if (flags.raw) for (const { label, r } of supported) {
+		const raw = [...r.raw].sort((a, b) => a - b)
+		const at = q => raw[Math.min(raw.length - 1, Math.floor(q * raw.length))]
+		console.log(`\n${label} raw impact speeds (${raw.length}): p5 ${at(0.05)} p25 ${at(0.25)} p50 ${at(0.5)} p75 ${at(0.75)} p95 ${at(0.95)} max ${raw.at(-1)}`)
+	}
+	console.log(`\nFull report: ${join(outDir, "report-impacts.json")}`)
 }
 
 async function multiPage(index, profile, query = "") {
