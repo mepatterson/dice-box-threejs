@@ -46,6 +46,11 @@ const defaultConfig = {
 	fontTimeout: 3000,
 	highlightResult: false,
 	throwFrom: "any",
+	// Side throws: how much the dice of one throw differ in where they come in, how fast and which way
+	// they go (0 sends them in as one block), and how high they are tossed (0 low and fast, 1 lofted so
+	// they rise and drop onto the table). See README.
+	spread: 1,
+	arc: 0,
 	preloadDice: null,
 	themeCache: 8,
 	onRollComplete: () => {},
@@ -85,6 +90,7 @@ const LEAD_STEPS = 2
 // never bursts.
 const IMPACT_LEAD_MS = 40
 const IMPACT_LATE_MS = 250
+const ENTRY_STEPS = 120
 
 const materialOf = colordata => {
 	const material = colordata?.texture?.material || 'none'
@@ -96,6 +102,16 @@ function themeKey(colorset, box) {
 	if (typeof colorset === "string") return `stock|${colorset}|${box.theme_texture}|${box.theme_material}`
 	const { name, ...rest } = colorset
 	return JSON.stringify(Object.fromEntries(Object.keys(rest).sort().map(key => [key, rest[key]])))
+}
+
+const clamp01 = x => Math.max(0, Math.min(1, Number(x) || 0))
+
+const shuffle = list => {
+	for (let i = list.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1))
+		;[list[i], list[j]] = [list[j], list[i]]
+	}
+	return list
 }
 
 const smoothstep = (a, b, x) => {
@@ -162,6 +178,7 @@ class DiceBox {
 		this.recording = null
 		this.impacts = null
 		this.impactPoint = new THREE.Vector3()
+		this.entryOffset = new CANNON.Vec3()
 		this.resolvedThemes = new Map()
 		this.themePromises = new Map()
 		this.boxResolved = null
@@ -314,17 +331,19 @@ class DiceBox {
 			this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction, restitution: bounce.wall}));
 			this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0, friction, restitution: bounce.dice}));
 
-			const plane = (material, axis, angle) => {
-				const body = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material})
+			// each plane has its own collision group, so a die coming in over a side wall can pass it
+			const plane = (material, group, axis, angle) => {
+				const body = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material, collisionFilterGroup: group})
 				if (axis) body.quaternion.setFromAxisAngle(axis, angle);
+				body.inward = body.quaternion.vmult(new CANNON.Vec3(0, 0, 1))
 				this.world.addBody(body);
 				return body
 			}
-			this.box_body.desk = plane(desk_body_material)
-			this.box_body.topWall = plane(barrier_body_material, new CANNON.Vec3(1, 0, 0), Math.PI / 2)
-			this.box_body.bottomWall = plane(barrier_body_material, new CANNON.Vec3(1, 0, 0), -Math.PI / 2)
-			this.box_body.leftWall = plane(barrier_body_material, new CANNON.Vec3(0, 1, 0), -Math.PI / 2)
-			this.box_body.rightWall = plane(barrier_body_material, new CANNON.Vec3(0, 1, 0), Math.PI / 2)
+			this.box_body.desk = plane(desk_body_material, 2)
+			this.box_body.topWall = plane(barrier_body_material, 4, new CANNON.Vec3(1, 0, 0), Math.PI / 2)
+			this.box_body.bottomWall = plane(barrier_body_material, 8, new CANNON.Vec3(1, 0, 0), -Math.PI / 2)
+			this.box_body.leftWall = plane(barrier_body_material, 16, new CANNON.Vec3(0, 1, 0), -Math.PI / 2)
+			this.box_body.rightWall = plane(barrier_body_material, 32, new CANNON.Vec3(0, 1, 0), Math.PI / 2)
 		}
 
 		// Moving the walls mid-throw would change the physics and break forced results, so a
@@ -631,6 +650,13 @@ class DiceBox {
 			this.trimThemes()
 		}
 		if ("throwFrom" in options) this.throwFrom = options.throwFrom
+		if ("spread" in options) this.spread = options.spread
+		if ("arc" in options) this.arc = options.arc
+		// for throws that start from now on; throws already rolling keep their recordings
+		if ("gravity_multiplier" in options) {
+			this.gravity_multiplier = options.gravity_multiplier
+			this.world.gravity.set(0, 0, -9.8 * this.gravity_multiplier)
+		}
 		if ("onImpact" in options) this.onImpact = options.onImpact
 		if ("impact" in options) this.impact = { ...defaultConfig.impact, ...options.impact }
 		if ("glass_refraction" in options) {
@@ -758,10 +784,11 @@ class DiceBox {
 	}
 
 	//returns an array of vectordata objects
-	getNotationVectors(notation, vector, boost, dist, side = 0){
+	getNotationVectors(notation, vector, boost, dist, side = 0, toss = {}){
 
 		let notationVectors = new DiceNotation(notation);
-		const slots = side ? this.sideSlots(notationVectors.set, side) : null;
+		const starts = side ? this.sideStarts(notationVectors.set, side, boost, toss) : null;
+		const arc = toss.arc ?? this.arc
 		let slot = 0;
 
 		for (let i in notationVectors.set) {
@@ -777,15 +804,15 @@ class DiceBox {
 
 			for(let k = 0; k < numdice; k++){
 
-				let vec = this.vectorRand(vector);
-
-				vec.x /= dist;
-				vec.y /= dist;
-
-				let pos
-				if (side) {
-					pos = slots(slot++);
+				const start = starts && starts(slot++)
+				let vec, pos, velvec
+				if (start) {
+					vec = velvec = start.heading
+					pos = start.pos
 				} else {
+					vec = this.vectorRand(vector);
+					vec.x /= dist;
+					vec.y /= dist;
 					pos = {
 						x: this.display.containerWidth * (vec.x > 0 ? -1 : 1) * (this.wallScale - 0.03),
 						y: this.display.containerHeight * (vec.y > 0 ? -1 : 1) * (this.wallScale - 0.03),
@@ -794,21 +821,20 @@ class DiceBox {
 
 					let projector = Math.abs(vec.x / vec.y);
 					if (projector > 1.0) pos.y /= projector; else pos.x *= projector;
-				}
 
-				let velvec = this.vectorRand(vector);
-				velvec.x /= dist;
-				velvec.y /= dist;
-				if (side) velvec.y = Math.max(-0.35, Math.min(0.35, velvec.y / Math.abs(velvec.x))) * Math.abs(velvec.x);
+					velvec = this.vectorRand(vector);
+					velvec.x /= dist;
+					velvec.y /= dist;
+				}
 				let velocity, angle, axis;
 
 				if (diceobj.shape != "d2") {
 
-					velocity = { 
-						x: velvec.x * boost, 
-						y: velvec.y * boost, 
-						z: -10
-					};
+					if (start) velocity = start.velocity
+					else {
+						const pace = 1 - 0.6 * clamp01(arc)
+						velocity = { x: velvec.x * boost * pace, y: velvec.y * boost * pace, z: this.lift(arc, diceobj.scale * this.baseScale) || -10 }
+					}
 
 					angle = {
 						x: -(Math.random() * vec.y * 5 + diceobj.inertia * vec.y),
@@ -824,9 +850,10 @@ class DiceBox {
 					};
 				} else {
 					//coin flip
-					velocity = { 
-						x: velvec.x * boost / 10, 
-						y: velvec.y * boost / 10, 
+					const flip = Math.max(boost / 10, start ? start.minimum : 0)
+					velocity = {
+						x: velvec.x * flip,
+						y: velvec.y * flip,
 						z: 3000
 					};
 
@@ -854,9 +881,10 @@ class DiceBox {
 					func: func, 
 					args: args, 
 					pos: pos, 
-					velocity: velocity, 
-					angle: angle, 
-					axis: axis
+					velocity: velocity,
+					angle: angle,
+					axis: axis,
+					enter: start ? side : 0
 				});
 			}            
 		}
@@ -864,32 +892,73 @@ class DiceBox {
 		return notationVectors;
 	}
 
-	// Side throws start each die in its own cell of a grid just inside the wall, in the middle 60%
-	// of its height (taller, then further in, then stacked higher when there are many dice), so no
-	// two dice start inside each other.
-	sideSlots(sets, side) {
+	// A side throw comes in over the entry wall from the edge of the canvas like a thrown handful. The
+	// dice start in lanes across the throw's path and rows behind the wall, the front ones fastest, each
+	// heading a little away from the middle lane and starting at its own height, so they come in one
+	// after another, string out across the box and fan out instead of landing and reaching the far wall
+	// as one block. Cells are at least 2.2 radii apart, so no two dice start inside each other. spread
+	// scales the differences (0 is one block) and arc tosses the dice up (lift). The entry wall lets
+	// each die through until it is all the way in (simulate).
+	sideStarts(sets, side, speed, { spread = this.spread, arc = this.arc } = {}) {
+		spread = clamp01(spread)
 		const count = sets.reduce((n, set) => n + set.num, 0)
 		const radius = Math.max(...sets.map(set => this.DiceFactory.get(set.type).scale || 1)) * this.baseScale
-		const spacing = radius * 2.2
+		const gap = radius * 2.2
 		const halfWidth = this.display.containerWidth * this.wallScale
-		const halfHeight = this.display.containerHeight * this.wallScale
-		const columns = Math.max(1, Math.floor(halfWidth / spacing))
-		let band = 0.3 * halfHeight
-		let rows = Math.max(1, Math.floor(2 * band / spacing))
-		while (rows * columns < count && band < halfHeight - radius) {
-			band = Math.min(halfHeight - radius, band + spacing / 2)
-			rows = Math.max(1, Math.floor(2 * band / spacing))
-		}
-		return k => {
-			const column = Math.floor(k / rows)
-			const inColumn = Math.min(rows, count - column * rows)
-			const cell = 2 * band / inColumn
+		const room = Math.max(0, this.display.containerHeight * this.wallScale - radius)
+		const band = 2 * room * (0.45 + 0.35 * spread)
+		const lanes = Math.max(1, Math.min(count, Math.floor(band / gap) + 1))
+		const laneGap = lanes > 1 ? Math.max(gap, Math.min(gap * (1 + 0.6 * spread), band / (lanes - 1))) : 0
+		const columns = Math.ceil(count / lanes)
+		const rowGap = gap * (1 + 0.4 * spread)
+		const middle = (Math.random() * 2 - 1) * Math.max(0, room - (lanes - 1) * laneGap / 2) * 0.6
+		const slope = (Math.random() * 2 - 1) * 0.25
+		const edge = this.display.containerWidth
+		const g = 9.8 * this.gravity_multiplier
+		arc = clamp01(arc)
+		const lift = this.lift(arc, radius)
+
+		const last = shuffle(Array.from({ length: lanes }, (_, l) => l)).slice(0, count - (columns - 1) * lanes)
+		const cells = shuffle([...Array.from({ length: (columns - 1) * lanes }, (_, i) => [Math.floor(i / lanes), i % lanes]), ...last.map(l => [columns - 1, l])])
+		const starts = cells.map(([column, lane]) => {
+			const across = lanes > 1 ? (lane - (lanes - 1) / 2) / ((lanes - 1) / 2) : 0
 			return {
-				x: -side * (halfWidth - 0.03 * this.display.containerWidth - (column % columns) * spacing),
-				y: -band + (k % rows + 0.5) * cell + (Math.random() - 0.5) * Math.max(0, cell - spacing),
-				z: Math.random() * 200 + 200 + Math.floor(column / columns) * spacing
+				back: column * rowGap + Math.random() * (rowGap - gap),
+				y: middle + (lane - (lanes - 1) / 2) * laneGap + (Math.random() - 0.5) * (laneGap && laneGap - gap),
+				z: radius * (1.2 + 0.9 * spread * Math.random()),
+				slope: slope + spread * (0.18 * across + 0.06 * (Math.random() - 0.5)),
+			}
+		})
+		const order = [...starts].sort((a, b) => a.back - b.back)
+		return k => {
+			const start = starts[k]
+			const rank = count > 1 ? order.indexOf(start) / (count - 1) : 0
+			const s = Math.max(-0.4, Math.min(0.4, start.slope))
+			const heading = { x: side / Math.hypot(1, s), y: s / Math.hypot(1, s) }
+			const inward = edge + start.back - halfWidth + radius
+			const air = (lift + Math.sqrt(lift * lift + 2 * g * Math.max(0, start.z - radius))) / g
+			// fast enough to get all the way in sliding, or before it comes down
+			const minimum = Math.min(Math.sqrt(2 * this.friction * g * inward), 1.2 * inward / air / Math.abs(heading.x))
+			let v = speed * (1 - spread * (0.4 * rank + 0.1 * Math.random()))
+			// a lofted die comes down no further than partway across, the front ones furthest, so the
+			// longer it is in the air the slower it goes (a low throw comes down about there anyway)
+			if (lift) v = Math.min(v, (edge + start.back - halfWidth + 2 * halfWidth * (0.55 - 0.25 * spread * rank)) / air / Math.abs(heading.x))
+			v = Math.max(minimum, v)
+			const up = lift || -0.06 * v
+			const t = inward / (v * Math.abs(heading.x))
+			return {
+				pos: { x: -side * (edge + start.back), y: start.y, z: Math.max(start.z, 1.1 * radius + g * t * t / 2 - up * t) },
+				heading,
+				minimum,
+				velocity: { x: heading.x * v, y: heading.y * v, z: up },
 			}
 		}
+	}
+
+	// How fast a toss goes up: arc 1 lofts a die about three radii.
+	lift(arc = this.arc, radius = this.baseScale) {
+		arc = clamp01(arc)
+		return arc ? Math.sqrt(2 * 9.8 * this.gravity_multiplier * arc * 3 * radius) : 0
 	}
 
 	// swaps dice faces to match desired result
@@ -999,6 +1068,10 @@ class DiceBox {
 		dicemesh.body.diceShape = dicemesh.shape;
 		dicemesh.body.impactStep = dicemesh.body.clackStep = -Infinity;
 		dicemesh.body.hitV = dicemesh.body.clackV = 0;
+		if (vectordata.enter) {
+			dicemesh.body.entering = vectordata.enter > 0 ? this.box_body.rightWall : this.box_body.leftWall
+			dicemesh.body.collisionFilterMask = ~dicemesh.body.entering.collisionFilterGroup
+		}
 		dicemesh.body.addEventListener('collide', this.eventCollide.bind(this));
 		this.world.addBody(dicemesh.body);
 		dicemesh.position.copy(dicemesh.body.position);
@@ -1160,6 +1233,7 @@ class DiceBox {
 					body.wBefore = (body.wBefore || new CANNON.Vec3()).copy(body.angularVelocity)
 				}
 				this.world.step(dt)
+				for (const { body } of dice) if (body.entering) this.passWall(body, step)
 				if (this.impacts) this.scanImpacts(this.recordStep)
 				record()
 			}
@@ -1170,6 +1244,28 @@ class DiceBox {
 		const impacts = this.impacts
 		this.recording = this.impacts = null
 		return { frames, sounds, impacts }
+	}
+
+	// A die coming in over the entry wall collides with it again once it is all the way inside. Until
+	// then it keeps at least the inward speed that gets it in sliding, so one knocked back by another
+	// die still comes in. After ENTRY_STEPS the wall is back whatever happened, and pushes it in.
+	passWall(body, step) {
+		const wall = body.entering
+		body.position.vsub(wall.position, this.entryOffset)
+		const left = body.boundingRadius - wall.inward.dot(this.entryOffset)
+		if (left <= 0 || step >= ENTRY_STEPS) {
+			body.collisionFilterMask = -1
+			body.entering = null
+			return
+		}
+		const g = this.world.gravity.length()
+		const vz = body.velocity.z
+		const fall = (vz + Math.sqrt(vz * vz + 2 * g * Math.max(0, body.position.z - body.boundingRadius))) / g
+		const need = 1.2 * Math.min(Math.sqrt(2 * this.friction * g * left), fall > 0 ? left / fall : Infinity)
+		const speed = wall.inward.dot(body.velocity)
+		if (speed >= need) return
+		body.velocity.addScaledVector(need - speed, wall.inward, body.velocity)
+		body.wakeUp()
 	}
 
 	// Puts a die of a throw that is still playing back where its recording has it at `frame`, moving
@@ -1412,17 +1508,16 @@ class DiceBox {
 		if (side) {
 			// mostly sideways, fast enough to cross the box whatever its size: a die sliding on the
 			// felt loses about 0.6 g, so this speed carries it most of the way and off the far wall
-			const vector = { x: side, y: (Math.random() * 2 - 1) * 0.25 }
 			const width = 2 * this.display.containerWidth * this.wallScale
 			const speed = Math.sqrt(2 * 0.6 * 9.8 * this.gravity_multiplier * 0.9 * width) * (0.85 + 0.3 * Math.random()) * this.strength
-			return this.getNotationVectors(notation, vector, speed, Math.hypot(vector.x, vector.y), side)
+			return this.getNotationVectors(notation, { x: side, y: 0 }, speed, 1, side, options)
 		}
 
 		let vector = { x: (Math.random() * 2 - 0.5) * this.display.currentWidth, y: -(Math.random() * 2 - 0.5) * this.display.currentHeight };
 		let dist = Math.sqrt(vector.x * vector.x + vector.y * vector.y) + 100;
 		let boost = (Math.random() + 3) * dist * this.strength;
 
-		const notationVectors = this.getNotationVectors(notation, vector, boost, dist);
+		const notationVectors = this.getNotationVectors(notation, vector, boost, dist, 0, options);
 
 		return notationVectors
 	}
@@ -1558,7 +1653,7 @@ class DiceBox {
 		return meshes
 	}
 
-	// roll(notation, { colorset, clear, throwFrom, highlightResult, onImpact }): colorset is a stock colorset name
+	// roll(notation, { colorset, clear, throwFrom, spread, arc, highlightResult, onImpact }): colorset is a stock colorset name
 	// or a custom colorset (or an array of them, one per die in order, cycled), for this throw only;
 	// clear: false keeps the dice on the table and the throws still rolling, and resolves with the
 	// results of this throw alone.
@@ -1628,7 +1723,7 @@ class DiceBox {
 		})
 	}
 
-	// add(notation, { colorset, throwFrom, highlightResult, onImpact }): throws more dice without clearing the
+	// add(notation, { colorset, throwFrom, spread, arc, highlightResult, onImpact }): throws more dice without clearing the
 	// table, even while other throws are still rolling, and resolves with the results of its dice.
 	async add(notationSting, options = {}){
 		return this.withThemes(options.colorset, themes => {

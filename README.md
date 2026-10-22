@@ -30,7 +30,7 @@ const defaultConfig = {
 	theme_colorset: "white", // see available colorsets in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/colorsets.js
 	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian" | "sparkles", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
 	theme_material: "glass", // "none" | "metal" | "wood" | "glass" | "plastic"
-	gravity_multiplier: 400,
+	gravity_multiplier: 400, // gravity is 9.8 times this; updateConfig changes it for the throws that follow
 	light_intensity: 0.7,
 	baseScale: 100,
 	strength: 1, // toss strength of dice
@@ -48,6 +48,8 @@ const defaultConfig = {
 	fontTimeout: 3000, // ms to wait for a colorset's number font before falling back to the default
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
+	spread: 1, // 0 to 1: how much the dice of one side throw differ in where they come in, speed and heading
+	arc: 0, // 0 to 1: how high dice are tossed; 0 low and fast, 1 lofted so they rise and drop onto the table
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	themeCache: 8, // themes (colorsets) kept ready beyond those on the table; see Several players on one table
 	onRollComplete: () => {},
@@ -219,7 +221,7 @@ box.roll("4d6", { colorset: [alice, bram, "fire", alice] })   // one colorset pe
 - `clear: false` keeps the dice on the table and the throws still rolling, and resolves with the results of
   this throw only (`sets`, `total`, and each die's `id` for `markDice`, `reroll` and `remove`). The default
   (`clear: true`) clears the table first, as before; throws it cuts short never resolve.
-- `throwFrom`, `highlightResult` and `onImpact` can be given per throw too. The rest stays box-wide: the environment,
+- `throwFrom`, `spread`, `arc`, `highlightResult` and `onImpact` can be given per throw too. The rest stays box-wide: the environment,
   lights and shadows (glass shadows follow the box's theme), pixel ratio, `textureScale`, sounds and
   physics. The glitter twinkle and gilded sweep are shared: flecks hold still while any die is rolling.
 - `preloadTheme(colorset, types = ["d20"])` loads the colorset's images and font, draws and uploads the
@@ -319,10 +321,24 @@ Silkscreen only reads at its regular weight, and best on the larger single-digit
 
 ### Throw direction
 `throwFrom: "any"` throws in a random direction from the edge opposite it. `"sides"` picks the left or
-right wall at random for each throw: the dice come in from just inside it, somewhere in the middle of
-its height, and travel mostly sideways fast enough to cross the box, bounce off the far wall and settle
-near the middle. Each die starts in its own spot (further in from the wall, or higher, when many dice
-don't fit), so dice never start inside each other. `"left"` and `"right"` always use that side.
+right wall at random for each throw, and `"left"` and `"right"` always use that side. A side throw comes
+in over that wall from the edge of the canvas like a thrown handful: each die starts in its own spot
+behind the wall (in lanes across the throw's path and rows behind each other, so dice never start inside
+each other), the front ones fastest, each heading a little away from the middle and starting at its own
+height. So the dice come in one after another, string out and fan out as they cross the box, instead of
+landing as one block and reaching the far wall together, where they piled up. They travel mostly sideways,
+fast enough to cross the box on any screen size.
+
+- `spread` (0 to 1, default 1) scales those differences. 0 sends the dice in as one block: same depth,
+  height, speed and heading.
+- `arc` (0 to 1, default 0) tosses the dice up so they rise (about three die radii at 1) and drop onto the
+  table. A lofted die goes slower along the table, so it comes down no further than about halfway across
+  and tumbles on from there; seen from above it swells slightly at the top of its arc (about 10% at 1) and
+  its shadow separates from it. Dice settle more spread out across the box the higher the arc, at the cost
+  of a slower throw.
+
+Both can be set per throw: `box.roll("5d6", { throwFrom: "sides", arc: 0.5 })`. The entry wall lets each
+die of a side throw pass until it is all the way in.
 
 ## Getting Results
 ### There are three ways to get results
@@ -385,6 +401,9 @@ node bench/run.mjs --multi   # themes in rotation: texture bytes, programs, crow
 node bench/run.mjs main=path/to/old.es.js branch=dist/dice-box-threejs.es.js --profiles=phone,laptop
 node bench/run.mjs --impacts         # what onImpact reports per throw size, concurrent throws, audio made
 node bench/run.mjs --on-impact       # the profiles with an onImpact listener attached
+node bench/run.mjs --spread          # where side throws of 2, 5 and 10 dice land, crowd and rest (heavy dice unless --physics=default)
+node bench/run.mjs --physics=heavy   # any mode with heavier, quicker-settling dice and soft walls
+node bench/run.mjs --spread --shots --browser=webkit   # contact sheets of side throws at phone and tablet sizes
 ```
 The bench needs Chrome installed. It renders with SwiftShader (software GL), so frame times are
 only meaningful relative to another build. See `docs/ARCHITECTURE.md` for how a roll works.

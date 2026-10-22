@@ -230,12 +230,22 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   `variant_cache` and freed in `dispose()`. Variants are drawn with the state the label was made with
   (`diceLabel`), not whatever colorset is current.
 - **Throw direction** (`throwFrom`): `"any"` keeps the original random vector. `"sides"` (or
-  `"left"`/`"right"`) spawns each die just inside one side wall in the middle 60% of its height and
-  sends it mostly sideways (|vy| at most 0.35 |vx|) at a speed from the box width and gravity, so it
-  crosses the box on any screen size. `sideSlots` gives each die its own cell 2.2 radii apart (the band
-  grows, then columns step in from the wall, then layers stack higher when the dice don't fit), so
-  cannon never starts with two dice deep inside each other. Both paths only use `Math.random`, so
-  seeded runs repeat.
+  `"left"`/`"right"`) throws from one side wall at a speed from the box width and gravity, so the dice
+  cross the box on any screen size. `sideStarts` lays the dice out behind the wall, starting at the
+  canvas edge: lanes across the throw's path (a band up to 80% of the box height) and rows behind each
+  other, cells at least 2.2 radii apart so cannon never starts with two dice inside each other. Dice in
+  front go fastest (each die's speed drops with its row rank, by up to 40% at `spread` 1, plus a little
+  noise), each heads up to about 10 degrees away from the middle lane, and each starts at its own height,
+  high enough to still be in the air when it is all the way in. So they come in one after another and
+  fan out; started as one block at one speed (the old layout, just inside the wall), the dice crossed the
+  box in the air and hit the far wall together, and on a narrow box bounced back to pile up by the entry
+  wall. `spread` scales all of it. Each die's mask leaves out the entry wall's collision group (every
+  plane has its own) until `passWall` sees it fully inside; until then it keeps at least the inward
+  speed that gets it in sliding or before it comes down, so a die knocked back by another still comes
+  in, and after `ENTRY_STEPS` the wall is back regardless. `arc` adds `lift` (an upward speed reaching
+  three radii at 1) and caps the speed along the table so a lofted die comes down no more than about
+  55% across (front dice) to 30% (back dice); a low throw comes down about there anyway.
+  Both paths only use `Math.random`, so seeded runs repeat.
 - Nothing is created per die except the mesh (and a glass die's interior mesh, and a highlighted
   die's halo sprite), its material array and its cannon body, so
   `clearDice` has nothing to free; `dispose()` frees the caches and the renderer.
