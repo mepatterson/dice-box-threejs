@@ -36,7 +36,9 @@ die land on a value chosen in advance.
    die's position and quaternion at every step. Before each step, a die that has fallen asleep has its
    face read (`storeRolledValue` via `getFaceValue`, which finds the face normal closest to straight up,
    or straight down for a d4) and turns kinematic with zero velocity, so it stays put and later dice
-   bounce off it. Collisions that would make a sound are recorded with their step.
+   bounce off it. Collisions that would make a sound are recorded with their step, and with `onImpact`
+   so are impacts (`recordImpact`): the impact velocity along the contact normal, die-on-die once per
+   pair, skipping those below `impact.min` and repeats of one die within `impact.interval`.
 4. **Relabel (the predetermined trick).** For every forced result that differs from the
    simulated face, `swapDiceFace` swaps which material (label texture) is drawn on the face
    that will end up on top and the face that carries the wanted number. Each face group of the
@@ -49,7 +51,8 @@ die land on a value chosen in advance.
 5. **Play back.** The throw is queued with its recording and a start step `LEAD_STEPS` (2) ahead
    of the shared step clock (`clockStep`: `performance.now()` in fixed steps), so the simulation has
    normally finished by then. `frame`, the one `requestAnimationFrame` loop, puts every throw's meshes
-   at the recorded pose for the current step, plays its sounds, runs the pops, sweeps and twinkles, and
+   at the recorded pose for the current step, plays its sounds, hands `onImpact` the impacts due
+   within `IMPACT_LEAD_MS` (`reportImpacts`, a cursor into the throw's recording), runs the pops, sweeps and twinkles, and
    renders only when something changed. Playback is the simulation itself, so the dice land exactly
    where the simulation read them; no second physics run has to repeat it.
 6. **Results.** When a throw's last frame is reached its cleared faces are read again (they report the

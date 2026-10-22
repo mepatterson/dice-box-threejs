@@ -50,7 +50,9 @@ const defaultConfig = {
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	themeCache: 8, // themes (colorsets) kept ready beyond those on the table; see Several players on one table
-	onRollComplete: () => {}
+	onRollComplete: () => {},
+	onImpact: null, // ({ speed, die, x, at }) => {}: each collision as the throw plays back; see Impacts
+	impact: { min: 120, full: 2400, interval: 0.06 }, // which collisions onImpact reports, and how loud
 }
 ```
 
@@ -217,7 +219,7 @@ box.roll("4d6", { colorset: [alice, bram, "fire", alice] })   // one colorset pe
 - `clear: false` keeps the dice on the table and the throws still rolling, and resolves with the results of
   this throw only (`sets`, `total`, and each die's `id` for `markDice`, `reroll` and `remove`). The default
   (`clear: true`) clears the table first, as before; throws it cuts short never resolve.
-- `throwFrom` and `highlightResult` can be given per throw too. The rest stays box-wide: the environment,
+- `throwFrom`, `highlightResult` and `onImpact` can be given per throw too. The rest stays box-wide: the environment,
   lights and shadows (glass shadows follow the box's theme), pixel ratio, `textureScale`, sounds and
   physics. The glitter twinkle and gilded sweep are shared: flecks hold still while any die is rolling.
 - `preloadTheme(colorset, types = ["d20"])` loads the colorset's images and font, draws and uploads the
@@ -240,6 +242,39 @@ the table are always kept. Programs are shared between colorsets of the same mat
 rarely compiles a shader. A page that keeps every throw on the table holds every theme, so remove old
 throws (`remove(ids)`) or clear the table now and then. For many players on phones, `textureScale: 0.35`
 or a lower `themeCache` cuts texture memory further.
+
+### Impacts
+For an app that plays its own sounds (Web Audio, its own recordings), `onImpact` is called for each
+collision of a throw as its playback reaches it, without loading or playing the library's sounds
+(`sounds` stays off unless you turn it on):
+```
+const box = new DiceBox("#dice-box", {
+  onImpact: ({ speed, die, x, at }) => playClick({ volume: speed, clack: die, pan: x * 2 - 1, delay: at }),
+})
+```
+- `speed`: 0 to 1, the impact velocity along the contact normal (so a die sliding or rolling on the
+  table is quiet and a drop is loud), linear from 0 to `impact.full` world units per second.
+- `die`: `true` when two dice hit each other (reported once, not once per die), `false` for the table
+  or a wall.
+- `x`: where on the screen it happened, 0 (left edge) to 1 (right edge), for panning.
+- `at`: seconds from the call until the frame showing the impact is due, 0 to about 0.04. Impacts are
+  reported a little ahead so a sound can be scheduled on time (`AudioBufferSourceNode.start(currentTime + at)`).
+
+Every throw is simulated to rest before it plays, so its collisions are recorded with their step during
+the simulation and reported from the playback loop, throw by throw; concurrent throws and per-throw
+colorsets each report their own, and a cleared throw reports nothing more. Collisions slower than
+`impact.min` (resting jitter, a settling die rocking on an edge) are never recorded, and a die reports
+at most one table or wall impact and one die-on-die impact per `impact.interval` seconds, so a 1d20
+throw reports about 8 impacts, 2d20 about 20 and 10d6 about 90 (the bench's `--impacts`). An impact
+due more than a quarter second before its frame ran (a hidden tab, a long stall) is dropped instead of
+reported late. Nothing is recorded or allocated per frame without `onImpact`; with it, each recorded
+impact is one small object made during the simulation and handed over as is (copy it to keep it). The
+listener can be set or cleared with `updateConfig({ onImpact })`, and `impact` the same way. A throw
+can bring its own listener, which replaces the box's for that throw only, for example to play another
+player's dice a little quieter:
+```
+box.roll("2d6@3,5", { colorset: bram, clear: false, onImpact: hit => playClick({ volume: hit.speed * 0.6 }) })
+```
 
 ### Labels
 A colorset's `outline` draws an outline round the numbers in that colour; `outline: "none"` (or
@@ -344,6 +379,8 @@ npm run build   # dist/dice-box-threejs.es.js (minified, three and cannon-es bun
 npm run bench   # predetermined-roll checks, timing, memory and bundle size in headless Chrome
 node bench/run.mjs --multi   # themes in rotation: texture bytes, programs, crowd frame times, first-throw latency
 node bench/run.mjs main=path/to/old.es.js branch=dist/dice-box-threejs.es.js --profiles=phone,laptop
+node bench/run.mjs --impacts         # what onImpact reports per throw size, concurrent throws, audio made
+node bench/run.mjs --on-impact       # the profiles with an onImpact listener attached
 ```
 The bench needs Chrome installed. It renders with SwiftShader (software GL), so frame times are
 only meaningful relative to another build. See `docs/ARCHITECTURE.md` for how a roll works.

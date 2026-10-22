@@ -52,6 +52,13 @@ const defaultConfig = {
 	onRerollComplete: () => {},
 	onAddDiceComplete: () => {},
 	onRemoveDiceComplete: () => {},
+	// Called with { speed, die, x, at } for each collision of a throw as its playback reaches it, so an
+	// app can play its own sounds; the library's own sounds stay off unless `sounds` is on. See README.
+	onImpact: null,
+	// Impacts slower than `min` (along the contact normal, world units per second) are resting jitter
+	// and never reported; `full` and faster report speed 1. One die reports at most one table or wall
+	// impact, and one die-on-die impact, per `interval` seconds.
+	impact: { min: 120, full: 2400, interval: 0.06 },
 }
 
 const SPOT_INTENSITY = 2.0
@@ -73,6 +80,11 @@ const TWINKLE_MS = 1100
 // A throw's playback starts this many physics steps after it is simulated, so the simulation is
 // normally done before its first frame is due.
 const LEAD_STEPS = 2
+// onImpact reports an impact up to IMPACT_LEAD_MS before its frame is due (its `at` says how long),
+// and drops one due more than IMPACT_LATE_MS ago (the tab was hidden or a frame stalled), so a backlog
+// never bursts.
+const IMPACT_LEAD_MS = 40
+const IMPACT_LATE_MS = 250
 
 const materialOf = colordata => {
 	const material = colordata?.texture?.material || 'none'
@@ -148,6 +160,8 @@ class DiceBox {
 		this.twinkleStart = null
 		this.frameRequested = false
 		this.recording = null
+		this.impacts = null
+		this.impactPoint = new THREE.Vector3()
 		this.resolvedThemes = new Map()
 		this.themePromises = new Map()
 		this.boxResolved = null
@@ -180,6 +194,7 @@ class DiceBox {
 
 		// merge this with default config and any options coming in
 		Object.assign(this, defaultConfig, options)
+		this.impact = { ...defaultConfig.impact, ...options.impact }
 
 		this.DiceColors = new DiceColors({assetPath: this.assetPath});
 		this.DiceFactory = new DiceFactory({
@@ -616,6 +631,8 @@ class DiceBox {
 			this.trimThemes()
 		}
 		if ("throwFrom" in options) this.throwFrom = options.throwFrom
+		if ("onImpact" in options) this.onImpact = options.onImpact
+		if ("impact" in options) this.impact = { ...defaultConfig.impact, ...options.impact }
 		if ("glass_refraction" in options) {
 			this.glass_refraction = options.glass_refraction
 			this.DiceFactory.setRefraction(options.glass_refraction)
@@ -980,6 +997,7 @@ class DiceBox {
 		dicemesh.body.linearDamping = this.damping;
 		dicemesh.body.angularDamping = this.damping;
 		dicemesh.body.diceShape = dicemesh.shape;
+		dicemesh.body.impactStep = dicemesh.body.clackStep = -Infinity;
 		dicemesh.body.addEventListener('collide', this.eventCollide.bind(this));
 		this.world.addBody(dicemesh.body);
 		dicemesh.position.copy(dicemesh.body.position);
@@ -989,11 +1007,34 @@ class DiceBox {
 		return dicemesh
 	}
 
-	// Sounds are recorded while a throw is simulated and played when its playback gets there.
-	eventCollide({body, target}) {
-		if (!this.sounds || !body || !this.recording) return;
+	// Sounds and impacts are recorded while a throw is simulated and played or reported when its
+	// playback gets there.
+	eventCollide({body, target, contact}) {
+		if (!body || !this.recording) return;
 		const dice = body.mass > 0
-		this.recording.push({ step: this.recordStep, dice, coin: body.diceShape === "d2", speed: (dice ? body : target).velocity.length() })
+		if (this.sounds) this.recording.push({ step: this.recordStep, dice, coin: body.diceShape === "d2", speed: (dice ? body : target).velocity.length() })
+		if (this.impacts) this.recordImpact(target, body, dice, contact)
+	}
+
+	// A collision fires on both bodies; die-on-die keeps the one from the die with the lower id.
+	recordImpact(die, other, dice, contact) {
+		if (dice && die.id > other.id) return
+		const { min, full, interval } = this.impact
+		const v = Math.abs(contact.getImpactVelocityAlongNormal())
+		if (v < min) return
+		const step = this.recordStep
+		const gap = Math.round(interval / this.framerate)
+		if (dice) {
+			if (step - die.clackStep < gap || step - other.clackStep < gap) return
+			die.clackStep = other.clackStep = step
+		} else {
+			if (step - die.impactStep < gap) return
+			die.impactStep = step
+		}
+		const { bi, ri } = contact
+		const point = this.impactPoint.set(bi.position.x + ri.x, bi.position.y + ri.y, bi.position.z + ri.z).project(this.camera)
+		this.impacts.steps.push(step)
+		this.impacts.hits.push({ speed: Math.min(1, v / full), die: dice, x: Math.min(1, Math.max(0, (point.x + 1) / 2)), at: 0 })
 	}
 
 	playSound({ step, dice, coin, speed }) {
@@ -1040,8 +1081,8 @@ class DiceBox {
 	// (kinematic, so later dice bounce off it). The dice of throws still playing back follow their
 	// own recorded paths step by step as moving kinematic bodies: the new dice bounce off them, and
 	// they never change, so their results stay what they were. Returns the poses of the new dice
-	// at every step and the collisions that make sounds.
-	simulate(dice, startStep) {
+	// at every step, the collisions that make sounds and, with recordImpacts, the impacts for onImpact.
+	simulate(dice, startStep, recordImpacts = Boolean(this.onImpact)) {
 		const dt = this.framerate
 		const movers = this.throws.flatMap(t => t.dice.map((mesh, j) => ({ mesh, t, j, frame: startStep - t.startStep })))
 		const n = dice.length
@@ -1052,6 +1093,7 @@ class DiceBox {
 			frames.push(frame)
 		}
 		this.recording = []
+		this.impacts = recordImpacts ? { steps: [], hits: [] } : null
 		this.recordStep = 0
 		record()
 		const done = new Array(n).fill(false)
@@ -1079,8 +1121,9 @@ class DiceBox {
 			for (const mover of movers) this.drive(mover, Infinity)
 		}
 		const sounds = this.recording
-		this.recording = null
-		return { frames, sounds }
+		const impacts = this.impacts
+		this.recording = this.impacts = null
+		return { frames, sounds, impacts }
 	}
 
 	// Puts a die of a throw that is still playing back where its recording has it at `frame`, moving
@@ -1110,15 +1153,16 @@ class DiceBox {
 
 	// Simulates a throw to the end, relabels faces for forced results and queues its playback, which
 	// starts a couple of steps ahead so the simulation is done by then. Other throws keep playing.
-	launch(meshes, forced = [], done) {
+	// onImpact is the throw's own listener, in place of the box's.
+	launch(meshes, forced = [], done, onImpact = null) {
 		const dice = meshes.filter(Boolean)
 		const startStep = this.clockStep() + LEAD_STEPS
-		const { frames, sounds } = this.simulate(dice, startStep)
+		const { frames, sounds, impacts } = this.simulate(dice, startStep, Boolean(onImpact || this.onImpact))
 		meshes.forEach((mesh, i) => {
 			if (!mesh || forced[i] === undefined || mesh.getLastValue().value == forced[i]) return
 			this.swapDiceFace(mesh, forced[i])
 		})
-		this.throws.push({ dice, frames, sounds, startStep, frame: -1, done })
+		this.throws.push({ dice, frames, sounds, impacts, onImpact, nextImpact: 0, startStep, frame: -1, done })
 		this.rolling = true
 		this.requestFrame()
 	}
@@ -1138,6 +1182,7 @@ class DiceBox {
 		let changed = false
 		const finished = []
 		for (const t of this.throws) {
+			if (t.impacts) this.reportImpacts(t)
 			const last = t.frames.length - 1
 			const f = Math.max(0, Math.min(last, step - t.startStep))
 			if (f !== t.frame) {
@@ -1170,6 +1215,28 @@ class DiceBox {
 		this.applyPixelRatio()
 		if (changed || finished.length) this.renderer.render(this.scene, this.camera)
 		if (this.throws.length || this.popping()) this.requestFrame()
+	}
+
+	// Hands onImpact the throw's impacts that are due within IMPACT_LEAD_MS, each with `at`, the
+	// seconds until its frame shows.
+	reportImpacts(t) {
+		const { steps, hits } = t.impacts
+		if (t.nextImpact >= steps.length) return
+		const now = performance.now()
+		const stepMs = this.framerate * 1000
+		while (t.nextImpact < steps.length) {
+			const due = steps[t.nextImpact] * stepMs
+			if (due > now + IMPACT_LEAD_MS) break
+			const hit = hits[t.nextImpact++]
+			const listener = t.onImpact || this.onImpact
+			if (due < now - IMPACT_LATE_MS || !listener) continue
+			hit.at = Math.max(0, (due - now) / 1000)
+			try {
+				listener(hit)
+			} catch (error) {
+				console.error(error)
+			}
+		}
 	}
 
 	// highlightResult: true | { glow: true | number (emissive intensity), pop: true,
@@ -1445,7 +1512,7 @@ class DiceBox {
 		return meshes
 	}
 
-	// roll(notation, { colorset, clear, throwFrom, highlightResult }): colorset is a stock colorset name
+	// roll(notation, { colorset, clear, throwFrom, highlightResult, onImpact }): colorset is a stock colorset name
 	// or a custom colorset (or an array of them, one per die in order, cycled), for this throw only;
 	// clear: false keeps the dice on the table and the throws still rolling, and resolves with the
 	// results of this throw alone.
@@ -1479,7 +1546,7 @@ class DiceBox {
 				this.launch(meshes, notationVectors.result, () => {
 					this.highlightDice(meshes, options.highlightResult)
 					finish()
-				})
+				}, options.onImpact)
 			})
 		})
 	}
@@ -1515,7 +1582,7 @@ class DiceBox {
 		})
 	}
 
-	// add(notation, { colorset, throwFrom, highlightResult }): throws more dice without clearing the
+	// add(notation, { colorset, throwFrom, highlightResult, onImpact }): throws more dice without clearing the
 	// table, even while other throws are still rolling, and resolves with the results of its dice.
 	async add(notationSting, options = {}){
 		return this.withThemes(options.colorset, themes => {
@@ -1547,7 +1614,7 @@ class DiceBox {
 					document.dispatchEvent(event)
 
 					resolve(results)
-				})
+				}, options.onImpact)
 			})
 		})
 	}
