@@ -13,6 +13,9 @@
 //   --impacts                   what onImpact reports per throw size, concurrent throws and audio made
 //   --impacts --raw             also the impact speeds before normalizing (to tune impact.min and full)
 //   --on-impact                 run the profiles with an onImpact listener attached
+//   --spread                    where side throws of 2, 5 and 10 dice land and rest (--physics=default|heavy)
+//   --spread --shots            contact sheets of side throws (--notations=2d20,10d6 --seeds=5,6)
+//   --browser=webkit            run in WebKit instead of Chrome
 //
 // The dice box is a full-viewport overlay (position: fixed; inset: 0) over page content, the way
 // an app that animates server-decided rolls would mount it. Chrome runs headless with
@@ -26,7 +29,7 @@ import { readFileSync } from "node:fs"
 import { gzipSync, brotliCompressSync } from "node:zlib"
 import { extname, join, resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { chromium } from "playwright"
+import { chromium, webkit } from "playwright"
 
 const PROFILES = {
 	phone: { width: 390, height: 844, dpr: 3, rolls: 50 },
@@ -56,6 +59,15 @@ if (!builds.length) builds.push({ label: "current", path: join(root, "dist", "di
 
 const profileNames = flags.profiles ? String(flags.profiles).split(",") : Object.keys(PROFILES)
 const seed = Number(flags.seed || 42)
+// --physics=heavy: heavier, quicker-settling dice with soft walls, for every mode (--spread uses it unless
+// --physics=default). Build overrides (#gravity_multiplier=480) go on top.
+const PHYSICS = {
+	default: {},
+	heavy: { gravity_multiplier: 600, strength: 1.8, friction: 0.75, damping: 0.25, settleTime: 0.45, restitution: { desk: 0.3, wall: 0.45, dice: 0.35 } },
+}
+const physicsFlag = PHYSICS[flags.physics] ?? {}
+// Viewports for --spread, as phone, tablet and tablet beside another app
+const SPREAD_SIZES = { phone: [390, 844], tablet: [820, 1180], "tablet-half": [600, 1000] }
 
 const TYPES = { ".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html", ".webp": "image/webp", ".png": "image/png", ".mp3": "audio/mpeg" }
 
@@ -115,7 +127,7 @@ async function runProfile(browser, port, index, name) {
 	const cdp = await context.newCDPSession(page)
 	const report = { profile: name, ...profile }
 	report.heapBeforeInit = await heap(cdp)
-	report.init = await page.evaluate(o => bench.init(undefined, o), builds[index].overrides)
+	report.init = await page.evaluate(o => bench.init(undefined, o), { ...physicsFlag, ...builds[index].overrides })
 	report.heapAfterInit = await heap(cdp)
 	report.infoAfterInit = await page.evaluate(() => bench.rendererInfo())
 
@@ -233,7 +245,7 @@ function summarize(r) {
 function table(title, rows) {
 	const keys = Object.keys(rows[0].values)
 	const width = Math.max(...keys.map(k => k.length))
-	const col = Math.min(34, Math.max(24, ...rows.flatMap(r => Object.values(r.values).map(v => String(v).length + 1))))
+	const col = Math.min(40, Math.max(24, ...rows.flatMap(r => Object.values(r.values).map(v => String(v).length + 1))))
 	console.log(`\n${title}`)
 	console.log("".padEnd(width) + rows.map(r => ` | ${r.label.padEnd(col)}`).join(""))
 	for (const [i, k] of keys.entries()) console.log(k.padEnd(width) + rows.map(r => ` | ${String(Object.values(r.values)[i]).padEnd(col)}`).join(""))
@@ -241,7 +253,7 @@ function table(title, rows) {
 
 const server = await serve()
 const port = server.address().port
-const browser = await chromium.launch({
+const browser = flags.browser === "webkit" ? await webkit.launch() : await chromium.launch({
 	channel: "chrome",
 	headless: true,
 	args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
@@ -255,6 +267,112 @@ if (flags.multi) {
 if (flags.impacts) {
 	await runImpacts()
 	process.exit(0)
+}
+
+if (flags.spread) {
+	await runSpread()
+	process.exit(0)
+}
+
+// Side throws of several dice: where they land and come to rest, at sizes where an app sizes its
+// dice to the viewport. "heavy" is heavier, quicker-settling dice with soft walls.
+async function runSpread() {
+	const SIZES = SPREAD_SIZES
+	const physics = PHYSICS[flags.physics || "heavy"]
+	const names = flags.profiles ? String(flags.profiles).split(",") : Object.keys(SIZES)
+	if (flags.shots) {
+		await spreadShots(names, physics)
+		await browser.close()
+		server.close()
+		return
+	}
+	const runs = Number(flags.rolls || 8)
+	const reports = []
+	for (let i = 0; i < builds.length; i++) for (const name of names) {
+		const [width, height] = SIZES[name]
+		const baseScale = Math.round(Math.min(140, Math.max(105, Math.min(width, height) / 4)))
+		const { context, page } = await openPage(browser, port, i, { width, height, dpr: 1 })
+		await page.evaluate(o => bench.init(undefined, o), { ...physics, throwFrom: "sides", baseScale, ...builds[i].overrides })
+		const r = await page.evaluate(o => bench.spread(o), { runs, seed: Number(flags.seed || 31), ...(flags.notations && { notations: String(flags.notations).split(",") }) })
+		reports.push({ label: `${builds[i].label} ${name}`, build: builds[i].label, name, r })
+		await context.close()
+	}
+	await browser.close()
+	server.close()
+	await mkdir(outDir, { recursive: true })
+	await writeFile(join(outDir, "report-spread.json"), JSON.stringify(reports, null, 2))
+	const q3 = list => {
+		if (!list.length) return "-"
+		const sorted = [...list].sort((a, b) => a - b)
+		const at = q => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
+		return `${at(0.1).toFixed(2)} / ${at(0.5).toFixed(2)} / ${at(0.9).toFixed(2)}`
+	}
+	const per = (rows, key) => `${avg(rows.map(x => x[key])).toFixed(1)} (max ${Math.max(...rows.map(x => x[key]))})`
+	for (const notation of Object.keys(reports[0].r)) {
+		table(`Side throws, ${notation} (${runs} each; across: 0 = entry wall, 1 = far wall)`, reports.map(({ label, r }) => {
+			const rows = r[notation]
+			return { label, values: {
+				"dice resting outside the walls": per(rows, "outside"),
+				"dice resting on another die": per(rows, "stacked"),
+				"dice touching another at rest": per(rows, "touching"),
+				"dice resting against the entry wall (1.25 r)": per(rows, "nearEntry"),
+				"dice resting against the far wall (1.25 r)": per(rows, "nearFar"),
+				"dice resting in the entry third": per(rows, "entryThird"),
+				"dice resting in the far third": per(rows, "farThird"),
+				"rest across p10 / p50 / p90": q3(rows.flatMap(x => x.restAcross)),
+				"rest spread across / along (of box)": `${avg(rows.map(x => x.restSpreadX)).toFixed(2)} / ${avg(rows.map(x => x.restSpreadY)).toFixed(2)}`,
+				"nearest die at rest (radii, avg)": rows[0].nearestNeighbor == null ? "-" : avg(rows.map(x => x.nearestNeighbor)).toFixed(2),
+				"pairs drawn overlapping at 100/200/300/450/600 ms": [0, 1, 2, 3, 4].map(k => avg(rows.map(x => x.overlap[k])).toFixed(1)).join(" "),
+				"dice against a side wall, same times": [0, 1, 2, 3, 4].map(k => avg(rows.map(x => x.atWall[k])).toFixed(1)).join(" "),
+				"die-on-die contacts in first 300 ms": per(rows, "contactsEarly"),
+				"die-on-die contacts, whole throw": per(rows, "contactsAll"),
+				"first table touch ms p10 / p50 / p90": q3(rows.flatMap(x => x.landMs)).replace(/\.00/g, ""),
+				"first touch, first to last die (ms avg)": avg(rows.map(x => x.landMs.length ? Math.max(...x.landMs) - Math.min(...x.landMs) : 0)).toFixed(0),
+				"across at first touch p10 / p50 / p90": q3(rows.flatMap(x => x.landAcross)),
+				"across at 100 / 300 / 600 ms (median)": ["across100", "across300", "across600"].map(k => quantileOf(rows.flatMap(x => x[k]), 0.5).toFixed(2)).join(" / "),
+				"peak height (radii, max)": Math.max(...rows.map(x => x.peakHeight)).toFixed(1),
+				"once in: biggest swell / px past canvas edge": `${Math.max(...rows.map(x => x.swell)).toFixed(2)}x / ${Math.max(...rows.map(x => x.poke)).toFixed(0)}`,
+				"settle (ms avg)": avg(rows.map(x => x.settleMs)).toFixed(0),
+			} }
+		}))
+	}
+	console.log(`\nFull report: ${join(outDir, "report-spread.json")}`)
+}
+
+// Contact sheets of side throws: each throw shown at a few moments of its recording, in a row.
+async function spreadShots(names, physics) {
+	const SIZES = SPREAD_SIZES
+	const moments = [0, 100, 200, 300, 450, 600, 900, Infinity]
+	const notations = String(flags.notations || "2d20,5d20,10d6").split(",")
+	const seeds = String(flags.seeds || "5").split(",").map(Number)
+	await mkdir(outDir, { recursive: true })
+	for (let i = 0; i < builds.length; i++) for (const name of names) {
+		const [width, height] = SIZES[name]
+		const baseScale = Math.round(Math.min(140, Math.max(105, Math.min(width, height) / 4)))
+		const { context, page } = await openPage(browser, port, i, { width, height, dpr: 1 })
+		await page.evaluate(o => bench.init(undefined, o), { ...physics, throwFrom: "sides", baseScale, ...builds[i].overrides })
+		for (const notation of notations) for (const seed of seeds) {
+			const info = await page.evaluate(([n, s]) => bench.keepThrow(n, s), [notation, seed])
+			const frames = []
+			for (const ms of moments) {
+				const f = await page.evaluate(t => bench.poseAt(t), ms === Infinity ? 1e9 : ms)
+				frames.push({ label: ms === Infinity ? `rest ${Math.round(f / 0.06)} ms` : `${ms} ms`, png: (await page.screenshot()).toString("base64") })
+			}
+			const sheet = await context.newPage()
+			const scale = Math.min(1, 1800 / (width * 4))
+			await sheet.setContent(`<body style="margin:0;background:#111;color:#ddd;font:14px sans-serif">
+				<div style="padding:6px 10px">${builds[i].label} ${name} ${width}x${height}, ${notation}, seed ${seed}: stacked ${info.metrics.stacked}, touching ${info.metrics.touching}, near entry ${info.metrics.nearEntry}, entry third ${info.metrics.entryThird}</div>
+				<div style="display:grid;grid-template-columns:repeat(4,${Math.round(width * scale)}px);gap:6px;padding:6px">${frames.map(f => `<figure style="margin:0"><img style="width:100%;display:block;border:1px solid #444" src="data:image/png;base64,${f.png}"><figcaption>${f.label}</figcaption></figure>`).join("")}</div></body>`)
+			await sheet.screenshot({ path: join(outDir, `spread-${builds[i].label}-${name}-${notation}-s${seed}.png`), fullPage: true })
+			await sheet.close()
+		}
+		await context.close()
+	}
+}
+
+function quantileOf(list, q) {
+	const sorted = [...list].sort((a, b) => a - b)
+	return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? NaN
 }
 
 async function runImpacts() {
@@ -311,7 +429,7 @@ async function runImpacts() {
 async function multiPage(index, profile, query = "") {
 	const { context, page } = await openPage(browser, port, index, profile, query)
 	const cdp = await context.newCDPSession(page)
-	await page.evaluate(o => bench.init(undefined, o), builds[index].overrides)
+	await page.evaluate(o => bench.init(undefined, o), { ...physicsFlag, ...builds[index].overrides })
 	return { context, page, cdp }
 }
 

@@ -256,8 +256,206 @@ async function timed(box, stats, fn) {
 	}
 }
 
+// Records every throw's dice, poses and contacts as it is simulated: which dice touch the table,
+// the walls or each other after each step, and how vertical each die pair's contact is.
+function captureThrows(box) {
+	if (box.captured) return box.captured
+	const captured = box.captured = { throws: [], current: null }
+	const step = box.world.step.bind(box.world)
+	box.world.step = (...a) => {
+		step(...a)
+		const cur = captured.current
+		if (!cur) return
+		const desk = box.box_body.desk
+		const touches = { desk: new Set(), wall: new Set(), pairs: new Map() }
+		for (const c of box.world.contacts) {
+			const i = cur.index.get(c.bi), j = cur.index.get(c.bj)
+			if (i !== undefined && j !== undefined) {
+				const key = i < j ? `${i}|${j}` : `${j}|${i}`
+				touches.pairs.set(key, Math.max(touches.pairs.get(key) ?? 0, Math.abs(c.ni.z)))
+			} else if (i !== undefined || j !== undefined) {
+				const other = i !== undefined ? c.bj : c.bi
+				;(other === desk ? touches.desk : touches.wall).add(i ?? j)
+			}
+		}
+		cur.steps.push(touches)
+	}
+	const simulate = box.simulate.bind(box)
+	box.simulate = (dice, ...a) => {
+		const cur = { dice, index: new Map(dice.map((m, j) => [m.body, j])), steps: [{ desk: new Set(), wall: new Set(), pairs: new Map() }] }
+		captured.current = cur
+		try {
+			const out = simulate(dice, ...a)
+			cur.frames = out.frames
+			captured.throws.push(cur)
+			return out
+		} finally { captured.current = null }
+	}
+	return captured
+}
+
+// What one captured throw did: where each die was early on and at rest, measured across the box
+// from the wall it came in from (0) to the far wall (1), when it first touched the table, die-on-die
+// contacts, and which dice rest touching or on top of another.
+function throwMetrics(box, cur) {
+	const dt = box.framerate
+	const n = cur.dice.length
+	const halfW = box.display.containerWidth * box.wallScale
+	const halfH = box.display.containerHeight * box.wallScale
+	const frames = cur.frames
+	const at = (f, j) => frames[Math.max(0, Math.min(frames.length - 1, f))].subarray(j * 7, j * 7 + 7)
+	const r = cur.dice.map(m => m.geometry.boundingSphere.radius)
+	const entry = Math.sign(avg(cur.dice.map((m, j) => at(0, j)[0]))) || 1
+	const across = x => (entry * halfW - x) * entry / (2 * halfW)
+	const last = frames.length - 1
+	const lastMove = cur.dice.map((m, j) => {
+		for (let f = last; f > 0; f--) {
+			const a = at(f, j), b = at(f - 1, j)
+			if (a.some((v, k) => Math.abs(v - b[k]) > 1e-4)) return f
+		}
+		return 0
+	})
+	const land = cur.dice.map((m, j) => {
+		const s = cur.steps.findIndex(t => t.desk.has(j))
+		return s < 0 ? null : s
+	})
+	let early = 0, all = 0
+	const lastContact = new Map()
+	let prev = new Map()
+	cur.steps.forEach((t, s) => {
+		for (const [key, vertical] of t.pairs) {
+			if (!prev.has(key)) {
+				all++
+				if (s * dt <= 0.3) early++
+			}
+			lastContact.set(key, { s, vertical })
+		}
+		prev = t.pairs
+	})
+	const touching = new Set(), stacked = new Set()
+	let restingPairs = 0
+	for (const [key, { s, vertical }] of lastContact) {
+		const [i, j] = key.split("|").map(Number)
+		if (s < Math.max(lastMove[i], lastMove[j]) - 2) continue
+		restingPairs++
+		touching.add(i).add(j)
+		if (vertical > 0.5) stacked.add(at(last, i)[2] > at(last, j)[2] ? i : j)
+	}
+	const rest = cur.dice.map((m, j) => at(last, j))
+	const restAcross = rest.map(p => across(p[0]))
+	const nearest = rest.map((p, i) => Math.min(...rest.map((q, j) => (i === j ? Infinity : Math.hypot(p[0] - q[0], p[1] - q[1]) / r[i]))))
+	const acrossAt = ms => cur.dice.map((m, j) => across(at(Math.round(ms / 1000 / dt), j)[0]))
+	// dice drawn over each other from above (centers closer than 1.6 radii across the table)
+	const overlapping = ms => {
+		const f = Math.round(ms / 1000 / dt)
+		let pairs = 0
+		for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+			const a = at(f, i), b = at(f, j)
+			if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.8 * (r[i] + r[j])) pairs++
+		}
+		return pairs
+	}
+	const atWall = ms => cur.dice.filter((m, j) => halfW - Math.abs(at(Math.round(ms / 1000 / dt), j)[0]) < 1.25 * r[j]).length
+	// Seen from the camera straight above, once a die is in: how much bigger it looks at its highest
+	// (perspective), and how far (CSS px) its bounding sphere pokes past the canvas edge.
+	const camera = box.camera.position.z
+	const px = box.container.clientWidth / (2 * box.display.containerWidth)
+	let swell = 1, poke = 0
+	cur.dice.forEach((m, j) => {
+		let entered = false
+		for (const f of frames) {
+			const [x, y, z] = f.subarray(j * 7, j * 7 + 3)
+			entered ||= Math.abs(x) <= halfW - r[j]
+			if (!entered) continue
+			const s = camera / (camera - z)
+			swell = Math.max(swell, s)
+			poke = Math.max(poke, ((Math.abs(x) + r[j]) * s - box.display.containerWidth) * px, ((Math.abs(y) + r[j]) * s - box.display.containerHeight) * px)
+		}
+	})
+	return {
+		swell,
+		poke,
+		n,
+		radius: avg(r),
+		landMs: land.filter(s => s !== null).map(s => s * dt * 1000),
+		landAcross: land.map((s, j) => (s === null ? null : across(at(s, j)[0]))).filter(x => x !== null),
+		across100: acrossAt(100), across300: acrossAt(300), across600: acrossAt(600),
+		peakHeight: Math.max(...cur.dice.map((m, j) => Math.max(...frames.map(f => f[j * 7 + 2] / r[j])))),
+		contactsEarly: early,
+		contactsAll: all,
+		restingPairs,
+		touching: touching.size,
+		stacked: stacked.size,
+		outside: rest.filter(p => Math.abs(p[0]) > halfW || Math.abs(p[1]) > halfH).length,
+		overlap: [100, 200, 300, 450, 600].map(overlapping),
+		atWall: [100, 200, 300, 450, 600].map(atWall),
+		nearFar: rest.filter((p, j) => Math.abs(p[0] + entry * halfW) < 1.25 * r[j]).length,
+		nearEntry: rest.filter((p, j) => Math.abs(p[0] - entry * halfW) < 1.25 * r[j]).length,
+		entryThird: restAcross.filter(x => x < 1 / 3).length,
+		farThird: restAcross.filter(x => x > 2 / 3).length,
+		restAcross,
+		restSpreadX: (Math.max(...rest.map(p => p[0])) - Math.min(...rest.map(p => p[0]))) / (2 * halfW),
+		restSpreadY: (Math.max(...rest.map(p => p[1])) - Math.min(...rest.map(p => p[1]))) / (2 * halfH),
+		nearestNeighbor: n > 1 ? avg(nearest) : null,
+		settleMs: last * dt * 1000,
+	}
+}
+
+// Waits for a throw to be simulated, then jumps its playback to the end.
+async function skipPlayback(box, captured, start) {
+	const before = captured.throws.length
+	const rolling = start()
+	while (captured.throws.length === before) await new Promise(r => setTimeout(r, 1))
+	for (const t of box.throws) t.startStep = -t.frames.length
+	return rolling
+}
+
 window.bench = {
 	rendererInfo: () => rendererInfo(window.box),
+
+	// Throws each notation `runs` times and measures where the dice go (throwMetrics). Playback
+	// jumps to the end of each throw once it is simulated, since only the recording is measured.
+	async spread({ notations = ["2d20", "5d20", "10d20", "2d6", "5d6", "10d6"], runs = 8, seed = 31, options = {} } = {}) {
+		const box = window.box
+		const captured = captureThrows(box)
+		Math.random = mulberry32(seed)
+		const out = {}
+		for (const notation of notations) {
+			const rows = []
+			for (let i = 0; i < runs; i++) {
+				const before = captured.throws.length
+				await skipPlayback(box, captured, () => box.roll(notation, options))
+				rows.push(throwMetrics(box, captured.throws[before]))
+			}
+			out[notation] = rows
+		}
+		box.clearDice()
+		return out
+	},
+
+	// Throws one notation and keeps its recording, so poseAt can show it at any moment.
+	async keepThrow(notation, seed = 5, options = {}) {
+		const box = window.box
+		const captured = captureThrows(box)
+		Math.random = mulberry32(seed)
+		const before = captured.throws.length
+		await skipPlayback(box, captured, () => box.roll(notation, options))
+		window.kept = captured.throws[before]
+		return { frames: window.kept.frames.length, metrics: throwMetrics(box, window.kept) }
+	},
+
+	poseAt(ms) {
+		const box = window.box
+		const cur = window.kept
+		const f = Math.min(cur.frames.length - 1, Math.round(ms / 1000 / box.framerate))
+		const poses = cur.frames[f]
+		cur.dice.forEach((mesh, j) => {
+			mesh.position.set(poses[j * 7], poses[j * 7 + 1], poses[j * 7 + 2])
+			mesh.quaternion.set(poses[j * 7 + 3], poses[j * 7 + 4], poses[j * 7 + 5], poses[j * 7 + 6])
+		})
+		box.renderer.render(box.scene, box.camera)
+		return f
+	},
 	gpuBytes: () => gpu.bytes(),
 
 	// `throws` throws cycling through the first `themes` themes; the dice of the last `keep` throws
