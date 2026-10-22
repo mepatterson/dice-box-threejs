@@ -37,8 +37,11 @@ die land on a value chosen in advance.
    face read (`storeRolledValue` via `getFaceValue`, which finds the face normal closest to straight up,
    or straight down for a d4) and turns kinematic with zero velocity, so it stays put and later dice
    bounce off it. Collisions that would make a sound are recorded with their step, and with `onImpact`
-   so are impacts (`recordImpact`): the impact velocity along the contact normal, die-on-die once per
-   pair, skipping those below `impact.min` and repeats of one die within `impact.interval`.
+   so are impacts (`scanImpacts`, after each step): every contact's approach speed along its normal
+   from the velocities the solver saw, so a die tumbling onto a new face counts even though it never
+   left the table; per step the hardest table or wall contact of each die and the hardest die-on-die
+   contact of each pair, skipping those below `impact.min` or 1.5 times what gravity adds in a step, and
+   repeats of one die within `impact.interval`.
 4. **Relabel (the predetermined trick).** For every forced result that differs from the
    simulated face, `swapDiceFace` swaps which material (label texture) is drawn on the face
    that will end up on top and the face that carries the wanted number. Each face group of the

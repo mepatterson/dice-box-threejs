@@ -262,13 +262,17 @@ const box = new DiceBox("#dice-box", {
 
 Every throw is simulated to rest before it plays, so its collisions are recorded with their step during
 the simulation and reported from the playback loop, throw by throw; concurrent throws and per-throw
-colorsets each report their own, and a cleared throw reports nothing more. Collisions slower than
-`impact.min` (resting jitter, a settling die rocking on an edge) are never recorded, and a die reports
-at most one table or wall impact and one die-on-die impact per `impact.interval` seconds, so a 1d20
-throw reports about 8 impacts, 2d20 about 20 and 10d6 about 90 (the bench's `--impacts`). An impact
-due more than a quarter second before its frame ran (a hidden tab, a long stall) is dropped instead of
-reported late. Nothing is recorded or allocated per frame without `onImpact`; with it, each recorded
-impact is one small object made during the simulation and handed over as is (copy it to keep it). The
+colorsets each report their own, and a cleared throw reports nothing more. Every contact of every step
+counts, not only a pair's first touch, so a die tumbling onto a new face while it still touches the
+table is an impact too. Contacts slower than `impact.min` are never recorded, nor slower than 1.5 times
+the speed gravity adds in one step (what a resting die's contacts approach at, so resting jitter and a
+die settling on a face stay quiet), and a die reports at most one table or wall impact and one
+die-on-die impact per `impact.interval` seconds. A 1d20 throw reports about 8 impacts, 2d20 about 20
+and 10d6 about 90 (the bench's `--impacts`). An impact due more than a quarter second before its frame
+ran (a hidden tab, a long stall) is dropped instead of reported late. Nothing is recorded, and nothing
+is allocated per frame, without `onImpact`; with it, the simulation costs a little more (under 1 ms
+for 10d6 in the bench) and each impact is one small object made during the simulation and handed over
+as is (copy it to keep it). The
 listener can be set or cleared with `updateConfig({ onImpact })`, and `impact` the same way. A throw
 can bring its own listener, which replaces the box's for that throw only, for example to play another
 player's dice a little quieter:

@@ -998,6 +998,7 @@ class DiceBox {
 		dicemesh.body.angularDamping = this.damping;
 		dicemesh.body.diceShape = dicemesh.shape;
 		dicemesh.body.impactStep = dicemesh.body.clackStep = -Infinity;
+		dicemesh.body.hitV = dicemesh.body.clackV = 0;
 		dicemesh.body.addEventListener('collide', this.eventCollide.bind(this));
 		this.world.addBody(dicemesh.body);
 		dicemesh.position.copy(dicemesh.body.position);
@@ -1007,34 +1008,74 @@ class DiceBox {
 		return dicemesh
 	}
 
-	// Sounds and impacts are recorded while a throw is simulated and played or reported when its
-	// playback gets there.
-	eventCollide({body, target, contact}) {
-		if (!body || !this.recording) return;
+	// Sounds are recorded while a throw is simulated and played when its playback gets there.
+	eventCollide({body, target}) {
+		if (!this.sounds || !body || !this.recording) return;
 		const dice = body.mass > 0
-		if (this.sounds) this.recording.push({ step: this.recordStep, dice, coin: body.diceShape === "d2", speed: (dice ? body : target).velocity.length() })
-		if (this.impacts) this.recordImpact(target, body, dice, contact)
+		this.recording.push({ step: this.recordStep, dice, coin: body.diceShape === "d2", speed: (dice ? body : target).velocity.length() })
 	}
 
-	// A collision fires on both bodies; die-on-die keeps the one from the die with the lower id.
-	recordImpact(die, other, dice, contact) {
-		if (dice && die.id > other.id) return
-		const { min, full, interval } = this.impact
-		const v = Math.abs(contact.getImpactVelocityAlongNormal())
-		if (v < min) return
-		const step = this.recordStep
-		const gap = Math.round(interval / this.framerate)
-		if (dice) {
-			if (step - die.clackStep < gap || step - other.clackStep < gap) return
-			die.clackStep = other.clackStep = step
-		} else {
-			if (step - die.impactStep < gap) return
-			die.impactStep = step
+	// Impacts, after each step of a simulation that records them: every contact's approach speed along
+	// its normal, from the velocities the solver saw (the new dice's, kept before the step). That catches
+	// a die tumbling onto a new face while it keeps touching the table, which cannon's collide event
+	// (first contact of a pair) misses. Each die keeps its hardest table or wall contact of the step and
+	// the lower-id die of a pair their hardest die-on-die one. A resting die's contacts approach at about
+	// what gravity adds in one step, so the floor is at least 1.5 times that.
+	scanImpacts(step) {
+		const floor = Math.max(this.impact.min, 1.5 * this.world.gravity.length() * this.framerate)
+		const contacts = this.world.contacts
+		for (let k = 0; k < contacts.length; k++) {
+			const c = contacts[k]
+			const v = this.approach(c)
+			if (v < floor) continue
+			const { bi, bj } = c
+			if (bi.mass > 0 && bj.mass > 0) {
+				const low = bi.id < bj.id ? bi : bj
+				if (v > low.clackV) { low.clackV = v; low.clackWith = low === bi ? bj : bi; low.clackContact = c }
+			} else {
+				const die = bi.mass > 0 ? bi : bj
+				if (v > die.hitV) { die.hitV = v; die.hitContact = c }
+			}
 		}
-		const { bi, ri } = contact
+		for (let k = 0; k < contacts.length; k++) {
+			this.flushImpact(contacts[k].bi, step)
+			this.flushImpact(contacts[k].bj, step)
+		}
+	}
+
+	// How fast bi's contact point closes on bj's along the normal (positive when approaching).
+	approach({ bi, bj, ni, ri, rj }) {
+		const kept = body => body.type === CANNON.Body.DYNAMIC && body.vBefore
+		const vi = kept(bi) ? bi.vBefore : bi.velocity, wi = kept(bi) ? bi.wBefore : bi.angularVelocity
+		const vj = kept(bj) ? bj.vBefore : bj.velocity, wj = kept(bj) ? bj.wBefore : bj.angularVelocity
+		const x = vi.x + wi.y * ri.z - wi.z * ri.y - (vj.x + wj.y * rj.z - wj.z * rj.y)
+		const y = vi.y + wi.z * ri.x - wi.x * ri.z - (vj.y + wj.z * rj.x - wj.x * rj.z)
+		const z = vi.z + wi.x * ri.y - wi.y * ri.x - (vj.z + wj.x * rj.y - wj.y * rj.x)
+		return ni.x * x + ni.y * y + ni.z * z
+	}
+
+	// Records a body's impacts of this step, at most one table or wall impact and one die-on-die impact
+	// per impact.interval for each die.
+	flushImpact(body, step) {
+		if (!(body.hitV > 0 || body.clackV > 0)) return
+		const gap = Math.round(this.impact.interval / this.framerate)
+		if (body.hitV > 0 && step - body.impactStep >= gap) {
+			body.impactStep = step
+			this.recordImpact(body.hitV, false, body.hitContact, step)
+		}
+		const other = body.clackWith
+		if (body.clackV > 0 && step - body.clackStep >= gap && step - other.clackStep >= gap) {
+			body.clackStep = other.clackStep = step
+			this.recordImpact(body.clackV, true, body.clackContact, step)
+		}
+		body.hitV = body.clackV = 0
+		body.hitContact = body.clackContact = body.clackWith = null
+	}
+
+	recordImpact(v, dice, { bi, ri }, step) {
 		const point = this.impactPoint.set(bi.position.x + ri.x, bi.position.y + ri.y, bi.position.z + ri.z).project(this.camera)
 		this.impacts.steps.push(step)
-		this.impacts.hits.push({ speed: Math.min(1, v / full), die: dice, x: Math.min(1, Math.max(0, (point.x + 1) / 2)), at: 0 })
+		this.impacts.hits.push({ speed: Math.min(1, v / this.impact.full), die: dice, x: Math.min(1, Math.max(0, (point.x + 1) / 2)), at: 0 })
 	}
 
 	playSound({ step, dice, coin, speed }) {
@@ -1114,7 +1155,12 @@ class DiceBox {
 				if (!left) break
 				for (const mover of movers) this.drive(mover, mover.frame + step)
 				this.recordStep = startStep + step + 1
+				if (this.impacts) for (const { body } of dice) {
+					body.vBefore = (body.vBefore || new CANNON.Vec3()).copy(body.velocity)
+					body.wBefore = (body.wBefore || new CANNON.Vec3()).copy(body.angularVelocity)
+				}
 				this.world.step(dt)
+				if (this.impacts) this.scanImpacts(this.recordStep)
 				record()
 			}
 		} finally {
