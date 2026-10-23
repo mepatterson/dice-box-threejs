@@ -373,7 +373,7 @@ async function spreadShots(names, physics) {
 			const sheet = await context.newPage()
 			const scale = Math.min(1, 1800 / (width * 4))
 			await sheet.setContent(`<body style="margin:0;background:#111;color:#ddd;font:14px sans-serif">
-				<div style="padding:6px 10px">${builds[i].label} ${name} ${width}x${height}, ${notation}, seed ${seed}: stacked ${info.metrics.stacked}, touching ${info.metrics.touching}, near entry ${info.metrics.nearEntry}, entry third ${info.metrics.entryThird}</div>
+				<div style="padding:6px 10px">${builds[i].label} ${name} ${width}x${height}, ${notation}, seed ${seed}: stacked ${info.metrics.stacked}, touching ${info.metrics.touching}, off flat ${info.metrics.tilted}, near entry ${info.metrics.nearEntry}, entry third ${info.metrics.entryThird}</div>
 				<div style="display:grid;grid-template-columns:repeat(4,${Math.round(width * scale)}px);gap:6px;padding:6px">${frames.map(f => `<figure style="margin:0"><img style="width:100%;display:block;border:1px solid #444" src="data:image/png;base64,${f.png}"><figcaption>${f.label}</figcaption></figure>`).join("")}</div></body>`)
 			await sheet.screenshot({ path: join(outDir, `spread-${builds[i].label}-${name}-${notation}-s${seed}.png`), fullPage: true })
 			await sheet.close()
