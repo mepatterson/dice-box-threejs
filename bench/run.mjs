@@ -15,6 +15,7 @@
 //   --on-impact                 run the profiles with an onImpact listener attached
 //   --spread                    where side throws of 2, 5 and 10 dice land, rest and tilt (--physics=default|heavy)
 //   --spread --shots            contact sheets of side throws (--notations=2d20,10d6 --seeds=5,6)
+//   --shapes                    contact sheets of every die type in each shape (edges, dish) and material
 //   --browser=webkit            run in WebKit instead of Chrome
 //
 // The dice box is a full-viewport overlay (position: fixed; inset: 0) over page content, the way
@@ -72,6 +73,12 @@ const PHYSICS = {
 const physicsFlag = PHYSICS[flags.physics] ?? {}
 // Viewports for --spread: phone, tablet, tablet beside another app, and a short box
 const SPREAD_SIZES = { phone: [390, 844], tablet: [820, 1180], "tablet-half": [600, 1000], "phone-landscape": [844, 390] }
+
+// Colorsets for shape sheets that aren't glass: gold metal and grey stone.
+const THEMES_FOR_SHOTS = {
+	metal: { foreground: "#2B1D0E", background: "#C9A227", outline: "none", material: "metal" },
+	stone: { foreground: "#ffffff", background: "#5A5A5A", outline: "#000000", texture: "stone" },
+}
 
 const TYPES = { ".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html", ".webp": "image/webp", ".png": "image/png", ".mp3": "audio/mpeg" }
 
@@ -276,6 +283,55 @@ if (flags.impacts) {
 if (flags.spread) {
 	await runSpread()
 	process.exit(0)
+}
+
+if (flags.shapes) {
+	await runShapes()
+	process.exit(0)
+}
+
+// Contact sheets of the dice's shapes: per material, a row per shape, each die type as it rests (seen
+// from above, as on the table) and turned to show its edges and faces. Physics never changes with the
+// shape, so every row lands the same way.
+async function runShapes() {
+	const SHAPES = { classic: null, sharp: { edges: 0 }, worn: { edges: 1 }, dished: { dish: 1 }, "worn, dished": { edges: 0.6, dish: 1 } }
+	const MATERIALS = {
+		glass: { foreground: "#ffffff", background: "#878787", outline: "#000000", material: "glass", glass_opacity: 0.85, glass_edges: 0.35, glass_refraction: { dispersion: true } },
+		metal: THEMES_FOR_SHOTS.metal,
+		stone: THEMES_FOR_SHOTS.stone,
+	}
+	const [width, height] = [1400, 440]
+	const tilt = Number(flags.tilt || 50)
+	await mkdir(outDir, { recursive: true })
+	const counts = []
+	for (let i = 0; i < builds.length; i++) for (const [material, colors] of Object.entries(MATERIALS)) {
+		const { context, page } = await openPage(browser, port, i, { width, height, dpr: Number(flags.dpr || 1) }, "&plain=1")
+		await page.evaluate(o => bench.init(undefined, o), { assetPath: "/", baseScale: Number(flags.scale || 150), ...builds[i].overrides })
+		const rows = []
+		for (const [name, shape] of Object.entries(SHAPES)) {
+			const colorset = { name: `${material}-${name}`, ...colors, ...(shape && { shape }) }
+			const flat = await page.evaluate(o => bench.shapes(o), { colorset })
+			const flatPng = (await page.screenshot()).toString("base64")
+			const turned = await page.evaluate(o => bench.shapes(o), { colorset, tilt })
+			const turnedPng = (await page.screenshot()).toString("base64")
+			const wrong = flat.values.filter((v, k) => Number(v) !== flat.faces[k]).length
+			rows.push({ name, flatPng, turnedPng, wrong })
+			if (flags.each) await writeFile(join(outDir, `shapes-${builds[i].label}-${material}-${name.replace(/\W+/g, "-")}.png`), Buffer.from(turnedPng, "base64"))
+			counts.push({ material, name, wrong, calls: turned.calls, geometry: turned.geometry })
+		}
+		await context.close()
+		const sheet = await browser.newPage({ viewport: { width: 1800, height: 800 } })
+		await sheet.setContent(`<body style="margin:0;background:#2a2622;color:#ddd;font:14px sans-serif">
+			<div style="padding:6px 10px">${builds[i].label}, ${material}: as they rest | turned ${tilt} degrees</div>
+			${rows.map(r => `<div style="display:grid;grid-template-columns:120px 1fr 1fr;gap:6px;padding:0 6px 6px;align-items:center"><div>${r.name}${r.wrong ? ` (${r.wrong} wrong)` : ""}</div><img style="width:100%" src="data:image/png;base64,${r.flatPng}"><img style="width:100%" src="data:image/png;base64,${r.turnedPng}"></div>`).join("")}</body>`)
+		await sheet.screenshot({ path: join(outDir, `shapes-${builds[i].label}-${material}.png`), fullPage: true })
+		await sheet.close()
+	}
+	await browser.close()
+	server.close()
+	for (const { material, name, wrong, calls, geometry } of counts) {
+		console.log(`${material.padEnd(6)} ${name.padEnd(13)} faces wrong ${wrong}, draw calls ${String(calls).padStart(4)}, triangles ${geometry.map(g => `${g.type} ${g.triangles}`).join(" ")}, KB ${geometry.map(g => (g.bytes / 1024).toFixed(0)).join(" ")}`)
+	}
 }
 
 // Side throws of several dice: where they land and come to rest, at sizes where an app sizes its

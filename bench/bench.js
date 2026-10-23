@@ -39,7 +39,7 @@ function mulberry32(seed) {
 const params = new URLSearchParams(location.search)
 Math.random = mulberry32(Number(params.get("seed") || 1))
 if (params.get("light")) document.body.classList.add("light")
-if (params.get("plain")) document.querySelector("main").hidden = true
+if (params.get("plain")) document.querySelector("main").style.display = "none"
 
 const gpu = trackTextures()
 const media = trackMedia()
@@ -514,6 +514,32 @@ window.bench = {
 		return f
 	},
 	gpuBytes: () => gpu.bytes(),
+
+	// One die of each type in a colorset (its shape included), thrown to forced faces and shown as it
+	// rests, then laid out in a row and turned to show three faces (tilt, in degrees). Returns the
+	// geometry's triangles and vertices per type, and draw calls for the row.
+	async shapes({ notation = "1d4+1d6+1d8+1d10+1d12+1d20@3,5,7,9,11,17", seed = 11, colorset = null, tilt = 0, highlightResult = true } = {}) {
+		const box = window.box
+		const captured = captureThrows(box)
+		Math.random = mulberry32(seed)
+		const result = await skipPlayback(box, captured, () => box.roll(notation, { ...(colorset && { colorset }), highlightResult }))
+		const dice = box.diceList.filter(m => m.parent)
+		if (tilt) {
+			const Q = dice[0].quaternion.constructor
+			const a = tilt * Math.PI / 360
+			const turn = new Q(Math.sin(a), 0, 0, Math.cos(a)).multiply(new Q(0, 0, Math.sin(0.35), Math.cos(0.35)))
+			const w = box.display.containerWidth * 0.82
+			dice.forEach((m, k) => {
+				m.position.set(-w + 2 * w * (k + 0.5) / dice.length, 0, m.position.z)
+				m.quaternion.premultiply(turn)
+			})
+		}
+		box.renderer.info.reset()
+		box.renderer.render(box.scene, box.camera)
+		const geometry = dice.map(m => ({ type: m.notation.type, triangles: (m.geometry.index ? m.geometry.index.count : m.geometry.getAttribute("position").count) / 3, vertices: m.geometry.getAttribute("position").count, groups: m.geometry.groups.length,
+			bytes: Object.values(m.geometry.attributes).reduce((sum, a) => sum + a.array.byteLength, m.geometry.index ? m.geometry.index.array.byteLength : 0) }))
+		return { values: result.sets.flatMap(s => s.rolls.map(r => r.value)), faces: dice.map(m => Number(m.getFaceValue().value)), geometry, calls: box.renderer.info.render.calls }
+	},
 
 	// `throws` throws cycling through the first `themes` themes; the dice of the last `keep` throws
 	// stay on the table. With `wave` > 1 (and a build that supports it) that many throws start at once.
