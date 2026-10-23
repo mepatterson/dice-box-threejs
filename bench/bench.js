@@ -342,6 +342,19 @@ function throwMetrics(box, cur) {
 		if (vertical > 0.5) stacked.add(at(last, i)[2] > at(last, j)[2] ? i : j)
 	}
 	const rest = cur.dice.map((m, j) => at(last, j))
+	const tilts = rest.map((p, j) => restTilt(cur.dice[j], p.subarray(3, 7)))
+	// what each die off flat touched while it came to rest: another die, a wall (or both)
+	const cocked = tilts.flatMap((tilt, j) => {
+		if (tilt <= TILT_DEGREES) return []
+		const from = Math.max(0, lastMove[j] - 3), to = Math.min(cur.steps.length - 1, lastMove[j] + 2)
+		let die = false, wall = false
+		for (let s = from; s <= to; s++) {
+			const t = cur.steps[s]
+			if (t.wall.has(j)) wall = true
+			for (const key of t.pairs.keys()) if (key.split("|").map(Number).includes(j)) die = true
+		}
+		return [{ tilt, die, wall }]
+	})
 	const restAcross = rest.map(p => across(p[0]))
 	const nearest = rest.map((p, i) => Math.min(...rest.map((q, j) => (i === j ? Infinity : Math.hypot(p[0] - q[0], p[1] - q[1]) / r[i]))))
 	const acrossAt = ms => cur.dice.map((m, j) => across(at(Math.round(ms / 1000 / dt), j)[0]))
@@ -382,6 +395,9 @@ function throwMetrics(box, cur) {
 		n,
 		radius: avg(r),
 		landMs: land.filter(s => s !== null).map(s => s * dt * 1000),
+		// from the throw to its first touch of the table: speed across the table and speed down
+		airSpeed: land.flatMap((s, j) => s ? [Math.hypot(at(s, j)[0] - at(0, j)[0], at(s, j)[1] - at(0, j)[1]) / (s * dt)] : []),
+		landVz: land.flatMap((s, j) => s > 1 ? [(at(s - 2, j)[2] - at(s - 1, j)[2]) / dt] : []),
 		landAcross: land.map((s, j) => (s === null ? null : across(at(s, j)[0]))).filter(x => x !== null),
 		across100: acrossAt(100), across300: acrossAt(300), across600: acrossAt(600),
 		peakHeight: Math.max(...cur.dice.map((m, j) => Math.max(...frames.map(f => f[j * 7 + 2] / r[j])))),
@@ -401,8 +417,44 @@ function throwMetrics(box, cur) {
 		restSpreadX: (Math.max(...rest.map(p => p[0])) - Math.min(...rest.map(p => p[0]))) / (2 * halfW),
 		restSpreadY: (Math.max(...rest.map(p => p[1])) - Math.min(...rest.map(p => p[1]))) / (2 * halfH),
 		nearestNeighbor: n > 1 ? avg(nearest) : null,
+		tilts,
+		tilted: cocked.length,
+		tiltedOnDie: cocked.filter(c => c.die).length,
+		tiltedOnWall: cocked.filter(c => c.wall && !c.die).length,
+		tiltedAlone: cocked.filter(c => !c.die && !c.wall).length,
 		settleMs: last * dt * 1000,
+		dieSettleMs: lastMove.map(f => f * dt * 1000),
 	}
+}
+
+// Dice resting further than this off flat count as tilted.
+const TILT_DEGREES = 5
+
+// How far (degrees) a die at rest is from lying flat: the angle between straight down and the
+// nearest face normal of its physics shape (rotated by its resting quaternion q).
+function restTilt(mesh, q) {
+	const shape = mesh.body.shapes[0]
+	if (!shape.faceNormals) return 0
+	const [x, y, z, w] = q
+	let best = -1
+	for (const n of shape.faceNormals) {
+		// z of the normal rotated by q
+		const tx = 2 * (y * n.z - z * n.y), ty = 2 * (z * n.x - x * n.z)
+		const down = -(n.z + w * (2 * (x * n.y - y * n.x)) + (x * ty - y * tx))
+		if (down > best) best = down
+	}
+	return Math.acos(Math.min(1, best)) * 180 / Math.PI
+}
+
+// The largest angle (degrees) between a die's drawn pose once its throw has finished and the last
+// pose of its recording, so tilt from playback or relabelling would show.
+function replayDrift(cur) {
+	const last = cur.frames[cur.frames.length - 1]
+	return Math.max(0, ...cur.dice.map((m, j) => {
+		const q = last.subarray(j * 7 + 3, j * 7 + 7)
+		const dot = Math.abs(m.quaternion.x * q[0] + m.quaternion.y * q[1] + m.quaternion.z * q[2] + m.quaternion.w * q[3])
+		return 2 * Math.acos(Math.min(1, dot)) * 180 / Math.PI
+	}))
 }
 
 // Waits for a throw to be simulated, then jumps its playback to the end.
@@ -429,7 +481,8 @@ window.bench = {
 			for (let i = 0; i < runs; i++) {
 				const before = captured.throws.length
 				await skipPlayback(box, captured, () => box.roll(notation, options))
-				rows.push(throwMetrics(box, captured.throws[before]))
+				const cur = captured.throws[before]
+				rows.push({ ...throwMetrics(box, cur), replayDrift: replayDrift(cur) })
 			}
 			out[notation] = rows
 		}

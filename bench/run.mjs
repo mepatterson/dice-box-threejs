@@ -13,7 +13,7 @@
 //   --impacts                   what onImpact reports per throw size, concurrent throws and audio made
 //   --impacts --raw             also the impact speeds before normalizing (to tune impact.min and full)
 //   --on-impact                 run the profiles with an onImpact listener attached
-//   --spread                    where side throws of 2, 5 and 10 dice land and rest (--physics=default|heavy)
+//   --spread                    where side throws of 2, 5 and 10 dice land, rest and tilt (--physics=default|heavy)
 //   --spread --shots            contact sheets of side throws (--notations=2d20,10d6 --seeds=5,6)
 //   --browser=webkit            run in WebKit instead of Chrome
 //
@@ -52,18 +52,22 @@ const builds = process.argv.slice(2).filter(a => !a.startsWith("--")).map(a => {
 	// label=path#key=value&key=value passes config overrides, e.g. branch-pr1=dist/x.js#maxPixelRatio=1
 	const [spec, hash = ""] = a.split("#")
 	const [label, path] = spec.includes("=") ? spec.split("=") : ["current", spec]
-	const overrides = Object.fromEntries([...new URLSearchParams(hash)].map(([k, v]) => [k, isNaN(Number(v)) ? v : Number(v)]))
+	const overrides = Object.fromEntries([...new URLSearchParams(hash)].map(([k, v]) => [k, parseOverride(v)]))
 	return { label, path: resolve(path), overrides }
 })
 if (!builds.length) builds.push({ label: "current", path: join(root, "dist", "dice-box-threejs.es.js") })
 
+function parseOverride(v) {
+	try { return JSON.parse(v) } catch { return v }
+}
+
 const profileNames = flags.profiles ? String(flags.profiles).split(",") : Object.keys(PROFILES)
 const seed = Number(flags.seed || 42)
 // --physics=heavy: heavier, quicker-settling dice with soft walls, for every mode (--spread uses it unless
-// --physics=default). Build overrides (#gravity_multiplier=480) go on top.
+// --physics=default). Build overrides (#gravity_multiplier=600) go on top.
 const PHYSICS = {
 	default: {},
-	heavy: { gravity_multiplier: 600, strength: 1.8, friction: 0.75, damping: 0.25, settleTime: 0.45, restitution: { desk: 0.3, wall: 0.45, dice: 0.35 } },
+	heavy: { gravity_multiplier: 480, strength: 1.8, friction: 0.75, damping: 0.25, settleTime: 0.25, restitution: { desk: 0.3, wall: 0.45, dice: 0.35 } },
 }
 const physicsFlag = PHYSICS[flags.physics] ?? {}
 // Viewports for --spread: phone, tablet, tablet beside another app, and a short box
@@ -331,9 +335,16 @@ async function runSpread() {
 				"across at first touch p10 / p50 / p90": q3(rows.flatMap(x => x.landAcross)),
 				"across at 100 / 300 / 600 ms (median)": ["across100", "across300", "across600"].map(k => quantileOf(rows.flatMap(x => x[k]), 0.5).toFixed(2)).join(" / "),
 				"peak height (radii, max)": Math.max(...rows.map(x => x.peakHeight)).toFixed(1),
+				"speed across the table until first touch (median)": quantileOf(rows.flatMap(x => x.airSpeed ?? []), 0.5).toFixed(0),
+				"speed down at that touch (median)": quantileOf(rows.flatMap(x => x.landVz ?? []), 0.5).toFixed(0),
 				"last die all the way in (ms, max)": Math.max(...rows.map(x => x.allIn)).toFixed(0),
 				"once in: biggest swell / px past canvas edge": `${Math.max(...rows.map(x => x.swell)).toFixed(2)}x / ${Math.max(...rows.map(x => x.poke)).toFixed(0)}`,
+				"dice resting over 5 deg off flat (per throw)": per(rows, "tilted"),
+				"  of those against a die / a wall / nothing": ["tiltedOnDie", "tiltedOnWall", "tiltedAlone"].map(k => rows.reduce((a, x) => a + x[k], 0)).join(" / "),
+				"tilt at rest p50 / p90 / max (deg)": tiltQuantiles(rows.flatMap(x => x.tilts)),
+				"drawn pose vs recording at rest (deg, max)": Math.max(...rows.map(x => x.replayDrift ?? 0)).toFixed(2),
 				"settle (ms avg)": avg(rows.map(x => x.settleMs)).toFixed(0),
+				"settle ms p50 / p90 / max": settleQuantiles(rows.map(x => x.settleMs)),
 			} }
 		}))
 	}
@@ -369,6 +380,14 @@ async function spreadShots(names, physics) {
 		}
 		await context.close()
 	}
+}
+
+function tiltQuantiles(list) {
+	return [0.5, 0.9].map(q => quantileOf(list, q).toFixed(1)).concat(Math.max(...list).toFixed(1)).join(" / ")
+}
+
+function settleQuantiles(list) {
+	return [0.5, 0.9].map(q => quantileOf(list, q).toFixed(0)).concat(Math.max(...list).toFixed(0)).join(" / ")
 }
 
 function quantileOf(list, q) {
