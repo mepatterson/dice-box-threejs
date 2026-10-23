@@ -91,6 +91,20 @@ const LEAD_STEPS = 2
 const IMPACT_LEAD_MS = 40
 const IMPACT_LATE_MS = 250
 const ENTRY_STEPS = 120
+// arc 1 hops a die this many radii, falling HOP_GRAVITY radii per second squared (airGravity)
+const HOP_HEIGHT = 2
+const HOP_GRAVITY = 250
+// Settling (unsettle): a die more than FLAT_RADIANS off flat is cocked. One that has been slow for
+// STUCK_TIME, or has fallen asleep, that way is nudged, at most NUDGES times, and then settles again
+// over RESETTLE_TIME. A nudge turns it to flat in about NUDGE_TIME, hops it NUDGE_LIFT radii and
+// slides it NUDGE_SLIDE radii away from what it leans on.
+const FLAT_RADIANS = 3 * Math.PI / 180
+const STUCK_TIME = 0.1
+const NUDGES = 4
+const RESETTLE_TIME = 0.1
+const NUDGE_TIME = 0.12
+const NUDGE_LIFT = 0.15
+const NUDGE_SLIDE = 0.45
 
 const materialOf = colordata => {
 	const material = colordata?.texture?.material || 'none'
@@ -179,6 +193,8 @@ class DiceBox {
 		this.impacts = null
 		this.impactPoint = new THREE.Vector3()
 		this.entryOffset = new CANNON.Vec3()
+		this.faceNormal = new CANNON.Vec3()
+		this.downFace = new CANNON.Vec3()
 		this.resolvedThemes = new Map()
 		this.themePromises = new Map()
 		this.boxResolved = null
@@ -831,10 +847,7 @@ class DiceBox {
 				if (diceobj.shape != "d2") {
 
 					if (start) velocity = start.velocity
-					else {
-						const pace = 1 - 0.6 * clamp01(arc)
-						velocity = { x: velvec.x * boost * pace, y: velvec.y * boost * pace, z: this.lift(arc, diceobj.scale * this.baseScale) || -10 }
-					}
+					else velocity = { x: velvec.x * boost, y: velvec.y * boost, z: this.lift(arc, diceobj.scale * this.baseScale) || -10 }
 
 					angle = {
 						x: -(Math.random() * vec.y * 5 + diceobj.inertia * vec.y),
@@ -884,7 +897,8 @@ class DiceBox {
 					velocity: velocity,
 					angle: angle,
 					axis: axis,
-					enter: start ? side : 0
+					enter: start ? side : 0,
+					pull: diceobj.shape != "d2" ? this.airGravity(arc, diceobj.scale * this.baseScale) - 9.8 * this.gravity_multiplier : 0
 				});
 			}            
 		}
@@ -897,8 +911,8 @@ class DiceBox {
 	// heading a little away from the middle lane and starting at its own height, so they come in one
 	// after another, string out across the box and fan out instead of landing and reaching the far wall
 	// as one block. Cells are at least 2.2 radii apart, so no two dice start inside each other. spread
-	// scales the differences (0 is one block) and arc tosses the dice up (lift). The entry wall lets
-	// each die through until it is all the way in (simulate).
+	// scales the differences (0 is one block) and arc tosses the dice up as they go, at the same speed
+	// (lift). The entry wall lets each die through until it is all the way in (simulate).
 	sideStarts(sets, side, speed, { spread = this.spread, arc = this.arc } = {}) {
 		spread = clamp01(spread)
 		const count = sets.reduce((n, set) => n + set.num, 0)
@@ -914,9 +928,9 @@ class DiceBox {
 		const middle = (Math.random() * 2 - 1) * Math.max(0, room - (lanes - 1) * laneGap / 2) * 0.6
 		const slope = (Math.random() * 2 - 1) * 0.25
 		const edge = this.display.containerWidth
-		const g = 9.8 * this.gravity_multiplier
 		arc = clamp01(arc)
 		const lift = this.lift(arc, radius)
+		const g = this.airGravity(arc, radius)
 
 		const last = shuffle(Array.from({ length: lanes }, (_, l) => l)).slice(0, count - (columns - 1) * lanes)
 		const cells = shuffle([...Array.from({ length: (columns - 1) * lanes }, (_, i) => [Math.floor(i / lanes), i % lanes]), ...last.map(l => [columns - 1, l])])
@@ -938,12 +952,8 @@ class DiceBox {
 			const inward = edge + start.back - halfWidth + radius
 			const air = (lift + Math.sqrt(lift * lift + 2 * g * Math.max(0, start.z - radius))) / g
 			// fast enough to get all the way in sliding, or before it comes down
-			const minimum = Math.min(Math.sqrt(2 * this.friction * g * inward), 1.2 * inward / air / Math.abs(heading.x))
-			let v = speed * (1 - spread * (0.4 * rank + 0.1 * Math.random()))
-			// a lofted die comes down no further than partway across, the front ones furthest, so the
-			// longer it is in the air the slower it goes (a low throw comes down about there anyway)
-			if (lift) v = Math.min(v, (edge + start.back - halfWidth + 2 * halfWidth * (0.55 - 0.25 * spread * rank)) / air / Math.abs(heading.x))
-			v = Math.max(minimum, v)
+			const minimum = Math.min(Math.sqrt(2 * this.friction * 9.8 * this.gravity_multiplier * inward), 1.2 * inward / air / Math.abs(heading.x))
+			const v = Math.max(minimum, speed * (1 - spread * (0.4 * rank + 0.1 * Math.random())))
 			const up = lift || -0.06 * v
 			const t = inward / (v * Math.abs(heading.x))
 			return {
@@ -955,10 +965,20 @@ class DiceBox {
 		}
 	}
 
-	// How fast a toss goes up: arc 1 lofts a die about three radii.
+	// How fast a toss goes up: arc 1 hops a die about HOP_HEIGHT radii.
 	lift(arc = this.arc, radius = this.baseScale) {
 		arc = clamp01(arc)
-		return arc ? Math.sqrt(2 * 9.8 * this.gravity_multiplier * arc * 3 * radius) : 0
+		return arc ? Math.sqrt(2 * this.airGravity(arc, radius) * arc * HOP_HEIGHT * radius) : 0
+	}
+
+	// How fast a die of a lofted throw falls while it touches nothing. For the size of the dice the
+	// table's gravity is weak (real dice fall about fifteen times as many of their own sizes per second
+	// squared), so a hop under it hangs in the air however high gravity is set. Lofted dice fall at
+	// HOP_GRAVITY radii per second squared in the air instead (or the table's, if that is stronger),
+	// fully from arc 0.25 up; how they slide, tumble and settle on the table stays the same.
+	airGravity(arc = this.arc, radius = this.baseScale) {
+		const g = 9.8 * this.gravity_multiplier
+		return g + Math.max(0, HOP_GRAVITY * radius - g) * Math.min(1, clamp01(arc) * 4)
 	}
 
 	// swaps dice faces to match desired result
@@ -1067,6 +1087,7 @@ class DiceBox {
 		dicemesh.body.angularDamping = this.damping;
 		dicemesh.body.diceShape = dicemesh.shape;
 		dicemesh.body.impactStep = dicemesh.body.clackStep = -Infinity;
+		dicemesh.body.pull = vectordata.pull > 0 ? vectordata.pull : 0;
 		dicemesh.body.hitV = dicemesh.body.clackV = 0;
 		if (vectordata.enter) {
 			dicemesh.body.entering = vectordata.enter > 0 ? this.box_body.rightWall : this.box_body.leftWall
@@ -1210,13 +1231,19 @@ class DiceBox {
 		this.impacts = recordImpacts ? { steps: [], hits: [] } : null
 		this.recordStep = 0
 		record()
+		for (const { body } of dice) {
+			body.nudges = 0
+			body.stuckAt = null
+			body.sleepTimeLimit = this.settleTime
+		}
+		const lofted = dice.some(({ body }) => body.pull > 0)
 		const done = new Array(n).fill(false)
 		let left = n
 		try {
 			for (let step = 0; ; step++) {
 				for (let j = 0; j < n; j++) {
 					const mesh = dice[j]
-					if (done[j] || (mesh.body.sleepState !== CANNON.Body.SLEEPING && step <= this.iterationLimit)) continue
+					if (done[j] || (step <= this.iterationLimit && this.unsettle(mesh.body))) continue
 					done[j] = true
 					left--
 					mesh.storeRolledValue(mesh.rerolling ? 'reroll' : mesh.resultReason)
@@ -1232,6 +1259,7 @@ class DiceBox {
 					body.vBefore = (body.vBefore || new CANNON.Vec3()).copy(body.velocity)
 					body.wBefore = (body.wBefore || new CANNON.Vec3()).copy(body.angularVelocity)
 				}
+				if (lofted) this.pullDown(dice)
 				this.world.step(dt)
 				for (const { body } of dice) if (body.entering) this.passWall(body, step)
 				if (this.impacts) this.scanImpacts(this.recordStep)
@@ -1244,6 +1272,78 @@ class DiceBox {
 		const impacts = this.impacts
 		this.recording = this.impacts = null
 		return { frames, sounds, impacts }
+	}
+
+	// Whether a die is still moving. A die can be slow enough to count as settled while it is still
+	// tipping over, or come to rest propped on an edge against a wall or another die (one that has
+	// settled is frozen, so it never gives way). A die that has been slow for STUCK_TIME, or has fallen
+	// asleep, off flat is nudged towards lying flat instead of freezing there (nudge), at most NUDGES
+	// times; after that it rests cocked, as real dice now and then do. A nudged die settles again
+	// over RESETTLE_TIME.
+	unsettle(body) {
+		const asleep = body.sleepState === CANNON.Body.SLEEPING
+		const stuck = body.sleepState === CANNON.Body.SLEEPY && body.stuckAt !== body.timeLastSleepy && this.world.time - body.timeLastSleepy >= STUCK_TIME
+		if (!asleep && !stuck) return !asleep
+		if (stuck) body.stuckAt = body.timeLastSleepy
+		if (body.nudges >= NUDGES) return !asleep
+		const tilt = this.tiltOf(body)
+		if (tilt <= FLAT_RADIANS) return !asleep
+		this.nudge(body, tilt)
+		body.nudges++
+		body.sleepTimeLimit = Math.min(this.settleTime, RESETTLE_TIME)
+		body.wakeUp()
+		return true
+	}
+
+	// How far (radians) a die is from lying flat: from straight down to its nearest face normal, which
+	// it leaves in this.downFace.
+	tiltOf(body) {
+		const normals = body.shapes[0].faceNormals
+		if (!normals) return 0
+		let best = -1
+		for (const normal of normals) {
+			const n = body.quaternion.vmult(normal, this.faceNormal)
+			if (-n.z > best) {
+				best = -n.z
+				this.downFace.copy(n)
+			}
+		}
+		return Math.acos(Math.min(1, best))
+	}
+
+	// Turns a die towards lying flat on its nearest face, fast enough to get there in about NUDGE_TIME,
+	// with a little hop, sliding it away from the walls and dice it leans on (the last step's contacts).
+	nudge(body, tilt) {
+		const n = this.downFace
+		const across = Math.hypot(n.x, n.y) || 1
+		const g = this.world.gravity.length()
+		let ax = 0, ay = 0
+		for (const { bi, bj, ni } of this.world.contacts) {
+			if (bi !== body && bj !== body) continue
+			if ((bi === body ? bj : bi) === this.box_body.desk) continue
+			const away = bi === body ? -1 : 1
+			ax += away * ni.x
+			ay += away * ni.y
+		}
+		const push = Math.hypot(ax, ay)
+		const slide = push > 1e-6 ? Math.sqrt(2 * this.friction * g * NUDGE_SLIDE * body.boundingRadius) / push : 0
+		const spin = tilt / NUDGE_TIME
+		body.angularVelocity.set(-n.y / across * spin, n.x / across * spin, 0)
+		body.velocity.set(ax * slide, ay * slide, Math.sqrt(2 * g * NUDGE_LIFT * body.boundingRadius))
+	}
+
+	// Before a step, the dice of a lofted throw that touched nothing in the last one get the rest of
+	// their air gravity (airGravity) on top of the world's, until they first slow down to settle: a die
+	// at rest can lose its contacts for a step, and pulled down then it would never come to rest.
+	pullDown(dice) {
+		const touching = this.touching || (this.touching = new Set())
+		touching.clear()
+		for (const { bi, bj } of this.world.contacts) touching.add(bi).add(bj)
+		for (const { body } of dice) {
+			if (!(body.pull > 0)) continue
+			if (body.type !== CANNON.Body.DYNAMIC || body.sleepState !== CANNON.Body.AWAKE) body.pull = 0
+			else if (!touching.has(body)) body.force.z -= body.mass * body.pull
+		}
 	}
 
 	// A die coming in over the entry wall collides with it again once it is all the way inside. Until
@@ -1705,6 +1805,7 @@ class DiceBox {
 				dicemesh.moving = true;
 				dicemesh.body.wakeUp();
 				dicemesh.body.type = CANNON.Body.DYNAMIC;
+				dicemesh.body.pull = 0;
 				dicemesh.body.angularVelocity = new CANNON.Vec3(25, 25, 25);
 				dicemesh.body.velocity = new CANNON.Vec3(0, 0, 3000);
 			})

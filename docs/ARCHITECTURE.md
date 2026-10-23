@@ -36,7 +36,16 @@ die land on a value chosen in advance.
    die's position and quaternion at every step. Before each step, a die that has fallen asleep has its
    face read (`storeRolledValue` via `getFaceValue`, which finds the face normal closest to straight up,
    or straight down for a d4) and turns kinematic with zero velocity, so it stays put and later dice
-   bounce off it. Collisions that would make a sound are recorded with their step, and with `onImpact`
+   bounce off it. Unless it is off flat (`unsettle`): more than 3 degrees from lying on a face of its
+   physics shape (`tiltOf`), once it has been slow for `STUCK_TIME` (0.1 s) or has fallen asleep. Cannon
+   counts a die as asleep once its speed stays under 75 for `settleTime`, which a die tipping slowly off
+   an edge passes, and a die propped against a wall or a frozen die never gives way, so frozen there it
+   rested cocked (0.7 to 2 of 10d6 per throw, 3.5 to 4 of 10d20, on the bench's heavy physics). `nudge` turns it
+   towards its nearest face, hops it 0.15 radii and slides it away from the walls and dice it touches
+   (the last step's contacts), at most `NUDGES` (4) times, and it settles again over `RESETTLE_TIME`
+   (0.1 s); a die still cocked after that rests that way. Since no die freezes mid-tip any more, a shorter
+   `settleTime` is safe and gives back the nudges' time.
+   Collisions that would make a sound are recorded with their step, and with `onImpact`
    so are impacts (`scanImpacts`, after each step): every contact's approach speed along its normal
    from the velocities the solver saw, so a die tumbling onto a new face counts even though it never
    left the table; per step the hardest table or wall contact of each die and the hardest die-on-die
@@ -242,9 +251,17 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   wall. `spread` scales all of it. Each die's mask leaves out the entry wall's collision group (every
   plane has its own) until `passWall` sees it fully inside; until then it keeps at least the inward
   speed that gets it in sliding or before it comes down, so a die knocked back by another still comes
-  in, and after `ENTRY_STEPS` the wall is back regardless. `arc` adds `lift` (an upward speed reaching
-  three radii at 1) and caps the speed along the table so a lofted die comes down no more than about
-  55% across (front dice) to 30% (back dice); a low throw comes down about there anyway.
+  in, and after `ENTRY_STEPS` the wall is back regardless. `arc` adds `lift`, an upward speed for a hop
+  of `HOP_HEIGHT` (2) radii at 1, on a throw at its usual speed. Under the table's gravity a hop hung in
+  the air (half a second and more at arc 0.5, whatever the gravity, while lofted dice crept along at a
+  third of their speed to come down mid-table): at the sizes dice are drawn, gravity of 480 is about
+  40 die radii per second squared, a fifteenth of what real dice fall. So the dice of a lofted throw fall
+  at `airGravity` while they touch nothing (`pullDown` adds the difference as a force before each step,
+  for dice that had no contact in the last one, until a die first slows to settle, since a resting die
+  can lose its contacts for a step): `HOP_GRAVITY` (250) radii per second squared, or the table's if
+  stronger, from arc 0.25 up and scaled down below it. Sliding, tumbling and settling are
+  under the table's gravity as before. A lofted die is in the air about 0.25 s, at full speed, and lands
+  hard; it may reach the far wall first.
   Both paths only use `Math.random`, so seeded runs repeat.
 - Nothing is created per die except the mesh (and a glass die's interior mesh, and a highlighted
   die's halo sprite), its material array and its cannon body, so
@@ -274,5 +291,6 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
 - Lights use three's physical units (r155+): decay 0 and intensities scaled from
   `light_intensity` so the look matches the old r143 renders; output is sRGB.
 - The physics world uses gravity of `-9.8 * gravity_multiplier` on z, the naive broadphase,
-  14 solver iterations and sleeping (dice sleep after 0.9 s below speed 75). The animation is
+  14 solver iterations and sleeping (dice sleep after `settleTime`, 0.9 s by default, below speed 75,
+  and freeze only lying flat or once their nudges are used up; see Simulate). The animation is
   the recorded simulation, so forced results line up without relying on cannon repeating itself.
