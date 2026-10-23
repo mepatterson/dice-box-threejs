@@ -897,7 +897,7 @@ class DiceFactory {
 			const preset = this.materialPreset();
 			if (this.dice_material == 'glass') {
 				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
-			} else if (preset && (preset.anisotropy || preset.clearcoat)) {
+			} else if (preset && (preset.anisotropy || preset.clearcoat || preset.sheen)) {
 				mat = new THREE.MeshPhysicalMaterial(preset);
 			} else if (preset) {
 				mat = new THREE.MeshStandardMaterial(preset);

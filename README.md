@@ -28,7 +28,7 @@ const defaultConfig = {
 	sound_dieMaterial: 'plastic',
 	theme_customColorset: null,
 	theme_colorset: "white", // see available colorsets in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/colorsets.js
-	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian" | "sparkles", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
+	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian" | "sparkles" | "moss", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
 	theme_material: "glass", // "none" | "metal" | "wood" | "glass" | "plastic"
 	gravity_multiplier: 400, // gravity is 9.8 times this; updateConfig changes it for the throws that follow
 	light_intensity: 0.7,
@@ -84,7 +84,7 @@ little darker than the old fully matte finish. Wood without a texture gets a woo
 body colour and a satin varnish, so it is told apart from plastic at a glance.
 
 ### Procedural textures
-Seven textures are generated in code instead of loaded from `public/textures`, so they need no asset
+Eight textures are generated in code instead of loaded from `public/textures`, so they need no asset
 files. Each is drawn in the colorset's own colours, with a finish to match:
 - `bone`: ivory. Faint warm staining, fine grain lines, tiny pores and the odd hairline crack, a satin
   finish and a very slight bump. Dark brown or near-black numbers read best on it.
@@ -112,6 +112,11 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   and twinkle slowly for about a second, gleaming in the chip's own colour, then hold still. Works on
   light and dark glass and on plastic; the numbers are drawn over it, clear of flecks. Obsidian's flecks
   behave the same way.
+- `moss`: moss on rock. Soft cushions of moss in deep, mid and bright yellow-green, thicker in the
+  hollows of a mottled rock in the body colour and thinner on its high spots, with fuzzy edges, damp
+  green-stained rock round them and fine shadows between the stems. A matte finish with a faint sheen,
+  and a bump that raises the moss over the rock and gives it a fine fuzz. Grey, slate and brown bodies
+  make good rock; light numbers read best.
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }

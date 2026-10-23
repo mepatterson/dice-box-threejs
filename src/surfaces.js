@@ -333,6 +333,58 @@ function sparkles(size) {
 	}, { glint: true });
 }
 
+// Moss on rock: soft cushions of moss, thicker in the hollows of a mottled rock and thinner on its
+// high spots, with fuzzy edges that break into fibres. Each cushion is darker at its rim and lighter
+// on top, with fine shadows between the stems and a few bright yellow-green tips. Round them the rock
+// is damp and faintly green, and away from them it is speckled like stone in the body colour. The
+// height lifts the moss gently over the rock, with a fine fuzz of stems on top and a coarser grain below.
+function moss(size) {
+	const n1 = valueNoise(81), n2 = valueNoise(82, 128), n3 = valueNoise(83, 128), n4 = valueNoise(84), n5 = valueNoise(85, 128);
+	const next = random(86);
+	const N = 7;
+	const cells = Array.from({ length: N * N }, () => [0.15 + 0.7 * next(), 0.15 + 0.7 * next(), 0.7 + 0.5 * next()]);
+	const dome = (x, y) => {
+		const cx = Math.floor(x), cy = Math.floor(y);
+		let best = 0;
+		for (let dy = -1; dy <= 1; dy++) {
+			for (let dx = -1; dx <= 1; dx++) {
+				const gx = cx + dx, gy = cy + dy;
+				const [px, py, r] = cells[(((gy % N) + N) % N) * N + (((gx % N) + N) % N)];
+				best = Math.max(best, 1 - Math.hypot(gx + px - x, gy + py - y) / r);
+			}
+		}
+		return best;
+	};
+	const layers = [
+		{ color: '#000000' }, { color: '#ffffff' }, { color: '#34441a' }, { color: '#1b3010' },
+		{ color: '#3f6626' }, { color: '#6f9a34' }, { color: '#b2d256' }, { color: '#0c1707' },
+	];
+	return build(size, layers, 0.6, (u, v, o) => {
+		const rock = fbm(n1, u * 3, v * 3, 4);
+		const wx = fbm(n4, u * 5, v * 5, 3) - 0.5, wy = fbm(n4, u * 5 + 31, v * 5 + 17, 3) - 0.5;
+		const clump = dome(u * N + wx * 1.4, v * N + wy * 1.4);
+		const patch = fbm(n4, u * 2.2 + 9, v * 2.2 + 4, 3);
+		const tuft = fbm(n2, u * 40, v * 40, 2);
+		const fibre = n3(u * 150, v * 150), stem = n2(u * 260 + 7, v * 260 + 3), grit = n5(u * 190, v * 190);
+		const t = 0.55 * clump + 0.5 * patch + 0.55 * (0.5 - rock) - 0.5 + 0.12 * (tuft - 0.5) + 0.14 * (fibre - 0.5);
+		const cover = smoothstep(-0.02, 0.07, t);
+		const thick = smoothstep(0, 0.45, t);
+		const bare = 1 - cover;
+		const fine = smoothstep(0.62, 0.85, grit);
+		const coarse = fbm(n5, u * 45 + 5, v * 45 + 8, 2);
+		o.masks[0] = bare * (0.12 * fine + 0.2 * smoothstep(0.5, 0.75, 1 - rock) + 0.14 * smoothstep(0.55, 0.7, coarse) + 0.28 * smoothstep(-0.1, 0, t));
+		o.masks[1] = bare * 0.22 * smoothstep(0.7, 0.85, n3(u * 110 + 9, v * 110 + 4)) * (1 - smoothstep(-0.2, 0, t));
+		o.masks[2] = bare * 0.4 * smoothstep(-0.22, 0, t);
+		o.masks[3] = cover;
+		o.masks[4] = cover * smoothstep(0.3, 0.75, 0.55 * thick + 0.45 * tuft + 0.25 * fibre);
+		o.masks[5] = cover * 0.75 * smoothstep(0.55, 0.85, 0.6 * thick + 0.4 * tuft + 0.15 * fibre);
+		o.masks[6] = cover * 0.9 * smoothstep(0.8, 0.94, 0.45 * thick + 0.3 * tuft + 0.4 * stem);
+		o.masks[7] = cover * 0.45 * smoothstep(0.7, 0.9, 1 - stem) * (1 - 0.6 * thick);
+		const rise = smoothstep(-0.04, 0.35, t);
+		o.height = 0.45 + 0.12 * rock + 0.1 * coarse - 0.06 * fine + 0.26 * rise + cover * (0.08 * tuft + 0.14 * (fibre - 0.5) + 0.1 * (stem - 0.5)) - 0.12 * o.masks[7];
+	});
+}
+
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
 // no texture.
 export function woodGrain(size = 256) {
@@ -358,7 +410,7 @@ export function woodGrain(size = 256) {
 	return canvasFrom(size, [field]);
 }
 
-const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles };
+const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss };
 
 export function makeSurface(name, size = 512) {
 	const generate = GENERATORS[name];

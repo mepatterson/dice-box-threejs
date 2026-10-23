@@ -268,6 +268,14 @@ export const TEXTURELIST = {
 		material: 'none',
 		finish: { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 0.35 }
 	},
+	'moss': {
+		name: 'Moss',
+		surface: 'moss',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: { roughness: 0.88, clearcoat: 0, clearcoatRoughness: 1, sheen: 0.3, sheenColor: '#b4c792', sheenRoughness: 0.8, envMapIntensity: 0.15 }
+	},
 	'none': {
 		name: 'none',
 		composite: 'source-over',

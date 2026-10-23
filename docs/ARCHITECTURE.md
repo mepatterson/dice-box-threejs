@@ -16,7 +16,7 @@ die land on a value chosen in advance.
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
 | `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
 | `src/shapes.js` | Shaped dice (`shape: { edges, dish }`): rounded or sharp edges and dished faces, drawn over the plain physics shape. |
-| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles) and the wood grain. |
+| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles, moss) and the wood grain. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
 ## How a roll flows
@@ -148,7 +148,8 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   texture, so every d20 of one colorset shares the same materials. A colorset material of
   `none` (or `plastic`) or `wood` gives `MeshPhysicalMaterial` with a clear coat, `metal` and
   `perfectmetal` `MeshStandardMaterial`, `brushedmetal` and `glass` `MeshPhysicalMaterial`, with
-  presets from `const/materialtypes.js`; an unknown material falls back to `MeshPhongMaterial`. Plastic
+  presets from `const/materialtypes.js`; an unknown material falls back to `MeshPhongMaterial`. A texture
+  finish with no clear coat but a sheen (moss) keeps `MeshPhysicalMaterial`, since only it has sheen. Plastic
   and wood drop the environment's diffuse light (`dielectricShader`) so it only adds reflections.
   Wood with no texture overlays a procedural grain (`woodGrain`, generated once with its own random
   numbers so seeded throws repeat), turned and shifted per face, on the label and faintly on the bump. An image
