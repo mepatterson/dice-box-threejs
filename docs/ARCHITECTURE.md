@@ -15,6 +15,7 @@ die land on a value chosen in advance.
 | `src/DicePreset.js` | One die type (labels, values, mass, inertia, scale) built from `const/dice.js`. |
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
 | `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
+| `src/shapes.js` | Shaped dice (`shape: { edges, dish }`): rounded or sharp edges and dished faces, drawn over the plain physics shape. |
 | `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles) and the wood grain. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
@@ -94,6 +95,25 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   per triangle. Numbered faces get `materialIndex` 1 or 2 and up; bevels get 0. The
   matching `CANNON.ConvexPolyhedron` (unchamfered) hangs off `geometry.cannon_shape`. A d2
   is a cylinder. Geometry is cached per die type.
+- **Shapes** (`shapes.js`, `DiceFactory.geometryOf`): a throw's shape (its colorset's `shape`, else the
+  box's) picks the geometry; the theme key leaves it out, so shapes share textures and materials. A shaped
+  geometry is cached per die type and shape (`shaped`, the `SHAPED_CACHE` most recent; an evicted one still on
+  the table is uploaded again when drawn) and takes its type's `cannon_shape`, so physics, settling and the
+  face swap never change. `buildShaped` keeps each face's classic chamfered polygon and label corners (the
+  table in `GEOM_PARAMS`). Rounding (`edges`) is the polyhedron shrunk by the rim and swept by a ball: with
+  the shrink factor c, face k's polygon is `c * V + (1 - c) * centre_k`, exactly the classic chamfer, so the
+  rounded surface between faces is the arc of those offsets from one face's direction to the next (strips
+  along edges, barycentric patches at corners), with smooth normals along the offsets. `edges` sets the
+  rounding radius in die radii (the same for every type, at most `BEVEL.most` of a face), and the label UVs
+  are scaled about the label's middle so a smaller face keeps most of its number's size (not on a d4).
+  Without `edges` the bevels and corners are the classic flat ones. A dish (`dish`, on `DISH_TYPES`) grids
+  each fan triangle of a face and lowers it by a profile of a p-norm of the face's edge distances (a circle on
+  a square, a rounded triangle on a d20) out to `DISH.extent`, normals from its slope, UVs interpolated from
+  the classic corners so the label follows the dish. The geometry is indexed (vertices welded where position,
+  normal and UV match) and has one group per face part plus one for every bevel and corner, so it draws in a
+  few calls. Dice draw without depth testing, so each face's dish group comes before every flat group: a
+  grazing view where a face's rim hides part of its dish draws the rim over it. `faceNormals` and `facePoints`
+  hold each group's face plane, which `topFace` and the halo read instead of a triangle's normal.
 - **Textures** (`createTextMaterial`): each face label is drawn to a 2D canvas (colour,
   optional texture image composited in, outlined text) plus a second canvas for the bump
   map. The layout is computed on the original square (512px for most dice) and drawn at

@@ -4,9 +4,12 @@ import {MATERIALTYPES} from "./const/materialtypes"
 import {DICE_GEOM} from "./const/dice"
 import {woodGrain, makeSurface, spectrumLayer} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
+import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
+
+const SHAPED_CACHE = 24;
 
 const defaultConfig = {
 	baseScale: 100,
@@ -259,6 +262,7 @@ class DiceFactory {
 	constructor(options) {
 		// this.dice = {};
 		this.geometries = {};
+		this.shaped = new Map();
 
 		this.materials_cache = {};
 		this.mesh_materials_cache = new Map();
@@ -318,6 +322,8 @@ class DiceFactory {
 	// Frees every cached geometry, texture and material on the GPU.
 	dispose() {
 		Object.values(this.geometries).forEach(geom => geom && geom.dispose());
+		this.shaped.forEach(geom => geom.dispose());
+		this.shaped = new Map();
 		this.themes.forEach(theme => this.disposeTheme(theme));
 		this.halo_cache.forEach(mat => mat.dispose());
 		if (this.halo_texture) this.halo_texture.dispose();
@@ -458,13 +464,16 @@ class DiceFactory {
 	topFace(mesh) {
 		const vector = new THREE.Vector3(0, 0, mesh.shape == 'd4' ? -1 : 1);
 		const normal = new THREE.Vector3();
-		const normals = mesh.geometry.getAttribute('normal').array;
+		const planes = mesh.geometry.faceNormals;
+		const normals = planes ? null : mesh.geometry.getAttribute('normal').array;
 		let closest_face, closest_angle = Math.PI * 2;
 		for (let i = 0, l = mesh.geometry.groups.length; i < l; ++i) {
 			const face = mesh.geometry.groups[i];
 			if (face.materialIndex == 0) continue;
-			// each group is one triangle: 3 vertices of 3 floats
-			normal.fromArray(normals, i * 9);
+			// a classic die's groups are one triangle each: 3 vertices of 3 floats; a shaped die's
+			// are whole faces, with their planes alongside
+			if (planes) normal.copy(planes[i]);
+			else normal.fromArray(normals, i * 9);
 			const angle = normal.applyQuaternion(mesh.body ? mesh.body.quaternion : mesh.quaternion).angleTo(vector);
 			if (angle < closest_angle) {
 				closest_angle = angle;
@@ -579,10 +588,8 @@ class DiceFactory {
 			point.multiplyScalar(0.8);
 			size = radius * 0.8;
 		} else {
-			const group = this.topFace(mesh);
-			const normal = new THREE.Vector3().fromBufferAttribute(mesh.geometry.getAttribute('normal'), group.start);
-			point.fromBufferAttribute(position, group.start);
-			point.copy(normal).multiplyScalar(normal.dot(point) + radius * 0.05);
+			const { normal, point: plane } = this.facePlane(mesh.geometry, this.topFace(mesh));
+			point.copy(normal).multiplyScalar(normal.dot(plane) + radius * 0.05);
 		}
 		const halo = new THREE.Sprite(mat);
 		halo.position.copy(point);
@@ -590,6 +597,16 @@ class DiceFactory {
 		halo.renderOrder = 1;
 		mesh.add(halo);
 		mesh.halo = halo;
+	}
+
+	// A face group's normal and a point on its plane (a shaped die's dish sits below it).
+	facePlane(geometry, group) {
+		const i = geometry.groups.indexOf(group);
+		if (geometry.faceNormals) return { normal: geometry.faceNormals[i], point: geometry.facePoints[i] };
+		return {
+			normal: new THREE.Vector3().fromBufferAttribute(geometry.getAttribute('normal'), group.start),
+			point: new THREE.Vector3().fromBufferAttribute(geometry.getAttribute('position'), group.start),
+		};
 	}
 
 	// Variants are drawn with the colorset the label was made with, even if it has changed since.
@@ -710,16 +727,12 @@ class DiceFactory {
 		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|gild`;
 	}
 
-	// returns a dicemesh (THREE.Mesh) object
-	create(type) {
+	// returns a dicemesh (THREE.Mesh) object, in a shape ({ edges, dish }, see shapes.js) or the classic one
+	create(type, shape = null) {
 		let diceobj = this.get(type);
 		if (!diceobj) return null;
 
-		let geom = this.geometries[type];
-		if(!geom) {
-			geom = this.createGeometry(diceobj.shape, diceobj.scale * this.baseScale);
-			this.geometries[type] = geom;
-		}
+		const geom = this.geometryOf(type, diceobj, shapeOf(shape));
 		if (!geom) return null;
 
 		this.setMaterialInfo();
@@ -807,6 +820,32 @@ class DiceFactory {
 			default:
 				return dicemesh;
 		}
+	}
+
+	// Geometry is cached per die type and shape. A shaped die shares its type's physics shape, so it
+	// moves exactly like the classic one. The SHAPED_CACHE most recently used shaped geometries are kept;
+	// an older one still on the table is uploaded again if it is drawn.
+	geometryOf(type, diceobj, shape) {
+		let classic = this.geometries[type];
+		if (!classic) {
+			classic = this.createGeometry(diceobj.shape, diceobj.scale * this.baseScale);
+			this.geometries[type] = classic;
+		}
+		if (!classic || !shape || !GEOM_PARAMS[diceobj.shape]) return classic;
+		const key = `${type}|${shapeKey(shape)}`;
+		let geom = this.shaped.get(key);
+		if (geom) this.shaped.delete(key);
+		else {
+			geom = buildShaped(diceobj.shape, diceobj.scale * this.baseScale, shape);
+			geom.cannon_shape = classic.cannon_shape;
+		}
+		this.shaped.set(key, geom);
+		for (const [old, oldGeom] of this.shaped) {
+			if (this.shaped.size <= SHAPED_CACHE) break;
+			this.shaped.delete(old);
+			oldGeom.dispose();
+		}
+		return geom;
 	}
 
 	get(type) {
@@ -1585,18 +1624,10 @@ class DiceFactory {
 				var geom = new THREE.CylinderGeometry(1*radius, 1*radius, 0.1*radius, 32);
 				geom.cannon_shape = new CANNON.Cylinder(1*radius, 1*radius, 0.1*radius, 8);
 				return geom;
-			case 'd4':
-				return this[func](DICE_GEOM.d4.vertices, DICE_GEOM.d4.faces, radius, -0.1, Math.PI * 7 / 6, 0.96);
-			case 'd6':
-				return this[func](DICE_GEOM.d6.vertices, DICE_GEOM.d6.faces, radius, 0.1, Math.PI / 4, 0.96);
-			case 'd8':
-				return this[func](DICE_GEOM.d8.vertices, DICE_GEOM.d8.faces, radius, 0, -Math.PI / 4 / 2, 0.965);
-			case 'd10':
-				return this[func](DICE_GEOM.d10.vertices, DICE_GEOM.d10.faces, radius, 0.3, Math.PI, 0.945);
-			case 'd12':
-				return this[func](DICE_GEOM.d12.vertices, DICE_GEOM.d12.faces, radius, 0.2, -Math.PI / 4 / 2, 0.968);
-			case 'd20':
-				return this[func](DICE_GEOM.d20.vertices, DICE_GEOM.d20.faces, radius, -0.2, -Math.PI / 4 / 2, 0.955);
+			case 'd4': case 'd6': case 'd8': case 'd10': case 'd12': case 'd20': {
+				const { tab, af, chamfer } = GEOM_PARAMS[type];
+				return this[func](DICE_GEOM[type].vertices, DICE_GEOM[type].faces, radius, tab, af, chamfer);
+			}
 			default:
 				console.error(`Geometry for ${type} is not available`)
 				return null;

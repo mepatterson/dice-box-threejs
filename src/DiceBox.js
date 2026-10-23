@@ -51,6 +51,9 @@ const defaultConfig = {
 	// they rise and drop onto the table). See README.
 	spread: 1,
 	arc: 0,
+	// The dice's shape, { edges, dish }: edges 0 (sharp) to 1 (rounded and worn), left out for the classic
+	// bevel; dish 0 to 1 for concave faces on the dice that have them. A colorset's own shape wins. See README.
+	shape: null,
 	preloadDice: null,
 	themeCache: 8,
 	onRollComplete: () => {},
@@ -111,10 +114,11 @@ const materialOf = colordata => {
 	return material == 'plastic' ? 'none' : material
 }
 
-// The same colorset always gives the same theme, whatever it is called.
+// The same colorset always gives the same theme, whatever it is called. Its shape changes only the
+// dice's geometry, so colorsets that differ only in shape share their textures and materials.
 function themeKey(colorset, box) {
 	if (typeof colorset === "string") return `stock|${colorset}|${box.theme_texture}|${box.theme_material}`
-	const { name, ...rest } = colorset
+	const { name, shape, ...rest } = colorset
 	return JSON.stringify(Object.fromEntries(Object.keys(rest).sort().map(key => [key, rest[key]])))
 }
 
@@ -316,12 +320,13 @@ class DiceBox {
 		const resolved = colorset ? await this.resolveTheme(colorset) : this.boxResolved
 		if (this.disposed) return
 		const theme = this.DiceFactory.useTheme(resolved.key, resolved.colordata, resolved.fontReady)
+		const shape = this.shapeOf(colorset)
 		theme.pins++
 		const group = new THREE.Group()
 		try {
 			this.trimThemes()
 			for (const type of types) {
-				const mesh = this.DiceFactory.create(type)
+				const mesh = this.DiceFactory.create(type, shape)
 				if (!mesh) continue
 				mesh.castShadow = this.shadows
 				group.add(mesh)
@@ -668,6 +673,7 @@ class DiceBox {
 		if ("throwFrom" in options) this.throwFrom = options.throwFrom
 		if ("spread" in options) this.spread = options.spread
 		if ("arc" in options) this.arc = options.arc
+		if ("shape" in options) this.shape = options.shape
 		// for throws that start from now on; throws already rolling keep their recordings
 		if ("gravity_multiplier" in options) {
 			this.gravity_multiplier = options.gravity_multiplier
@@ -1067,10 +1073,10 @@ class DiceBox {
 		dicemesh.result = [];
 	}
 
-	// Spawns one die for a vectordata object, in a theme, at its start position.
-	spawnDice(vectordata, theme) {
+	// Spawns one die for a vectordata object, in a theme and shape, at its start position.
+	spawnDice(vectordata, theme, shape = null) {
 		this.DiceFactory.useTheme(theme.key, theme.colordata, theme.fontReady)
-		const dicemesh = this.DiceFactory.create(vectordata.type)
+		const dicemesh = this.DiceFactory.create(vectordata.type, shape)
 		if (!dicemesh) return null
 		const { pos, axis, angle, velocity } = vectordata
 		dicemesh.notation = vectordata
@@ -1747,8 +1753,16 @@ class DiceBox {
 		return themes instanceof Promise ? themes.then(start) : start(themes)
 	}
 
-	spawnThrow(notationVectors, themes) {
-		const meshes = notationVectors.vectors.map((vector, i) => this.spawnDice(vector, themes[i % themes.length]))
+	// A colorset's own shape, or the box's (null: the box's colorset, or a stock one).
+	shapeOf(colorset) {
+		const own = colorset ?? this.theme_customColorset
+		return own && typeof own === "object" && own.shape !== undefined ? own.shape : this.shape
+	}
+
+	spawnThrow(notationVectors, themes, colorset) {
+		const list = Array.isArray(colorset) ? colorset : [colorset]
+		const shapes = list.map(c => this.shapeOf(c))
+		const meshes = notationVectors.vectors.map((vector, i) => this.spawnDice(vector, themes[i % themes.length], shapes[i % shapes.length]))
 		this.trimThemes()
 		return meshes
 	}
@@ -1783,7 +1797,7 @@ class DiceBox {
 					resolve(results)
 				}
 				if (notationVectors.error) return finish()
-				const meshes = this.spawnThrow(notationVectors, themes)
+				const meshes = this.spawnThrow(notationVectors, themes, options.colorset)
 				this.launch(meshes, notationVectors.result, () => {
 					this.highlightDice(meshes, options.highlightResult)
 					finish()
@@ -1836,7 +1850,7 @@ class DiceBox {
 
 			const addNotationVectors = this.startClickThrow(notationSting, options)
 			const first = this.diceList.length
-			const meshes = this.spawnThrow(addNotationVectors, themes)
+			const meshes = this.spawnThrow(addNotationVectors, themes, options.colorset)
 			const diceIdArray = meshes.map((mesh, i) => mesh ? first + i : null).filter(id => id !== null)
 
 			// let our vectors combine

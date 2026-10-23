@@ -50,6 +50,7 @@ const defaultConfig = {
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
 	spread: 1, // 0 to 1: how much the dice of one side throw differ in where they come in, speed and heading
 	arc: 0, // 0 to 1: how high dice hop as they are thrown; 0 low along the table, 1 a hop of about two radii
+	shape: null, // { edges, dish }: sharp to worn edges and concave faces; a colorset's own shape wins. See Shapes
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	themeCache: 8, // themes (colorsets) kept ready beyond those on the table; see Several players on one table
 	onRollComplete: () => {},
@@ -340,6 +341,28 @@ fast enough to cross the box on any screen size.
 Both can be set per throw: `box.roll("5d6", { throwFrom: "sides", arc: 0.5 })`. The entry wall lets each
 die of a side throw pass until it is all the way in.
 
+### Shapes
+`shape: { edges, dish }` changes how the dice are drawn, never how they move: each die keeps the
+physics shape of the plain polyhedron, so throws, settling and forced results are the same in every shape.
+
+- `edges` (0 to 1) rounds the edges and corners: 0 is a sharp, casino-style hairline, 1 rounded and worn
+  like an old resin or stone die (the same rounding for every die type, at most 30% of a face). Left out,
+  dice keep the library's classic flat bevel.
+- `dish` (0 to 1) hollows each face of a d6, d8, d12 and d20 into a shallow dish inside a flat rim, the
+  rim the die rests on, as on dice with concave faces. The number follows the dish down. A d4 (numbers
+  in its corners) and a d10 (kite faces) stay flat.
+
+Set it for the box, or per colorset, which also makes it per throw:
+```
+box.roll("2d20", { colorset: { foreground: "#ffffff", background: "#7d7d7d", material: "metal", shape: { edges: 0 } } })
+```
+A colorset's shape doesn't make it a new theme: colorsets that differ only in shape share their textures
+and materials. Shaped geometry is built the first time a shape and die type is used and cached (the 24
+most recent), 4 to 130 KB of vertices and indices per die type; a shaped die draws in one call per face (two with a dish)
+plus one for its edges, against one per triangle for a classic die. The highlight, kept and dropped
+marks, glass and metal all work on every shape. `node bench/run.mjs --shapes` draws contact sheets of
+every die type in each shape.
+
 ## Getting Results
 ### There are three ways to get results
 1. You can define an `onRollComplete` callback function when creating the Dice Box
@@ -404,6 +427,7 @@ node bench/run.mjs --on-impact       # the profiles with an onImpact listener at
 node bench/run.mjs --spread          # where side throws of 2, 5 and 10 dice land, crowd and rest, how long they are aloft and how far off flat they rest (heavy dice unless --physics=default)
 node bench/run.mjs --physics=heavy   # any mode with heavier, quicker-settling dice and soft walls
 node bench/run.mjs --spread --shots --browser=webkit   # contact sheets of side throws at phone and tablet sizes
+node bench/run.mjs --shapes --browser=webkit --dpr=2   # contact sheets of every die type in each shape, glass, metal and stone (--each for single rows)
 ```
 The bench needs Chrome installed. It renders with SwiftShader (software GL), so frame times are
 only meaningful relative to another build. See `docs/ARCHITECTURE.md` for how a roll works.
