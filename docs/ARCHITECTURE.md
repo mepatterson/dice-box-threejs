@@ -23,6 +23,7 @@ die land on a value chosen in advance.
 | `src/bloom.js` | Bloom for glowing dice: the bloom-only patch, the bloom layer's pass and its premultiplied composite. |
 | `src/lava.js` | The lava texture's flowing, glowing cracks: its two code-drawn textures and its material patch. |
 | `src/liquid.js` | Liquid fill for glass dice: the level, the clipped body and top shaders, the bubbles and the slosh state. |
+| `src/particles.js` | Particles off the dice: kinds, theme matching, the shared capped pool and its sprite shader. |
 | `src/energy.js` | The energy material: the glowing line ribbons per die type, their shader and the numbers' patch. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
@@ -342,6 +343,22 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   second difference of its positions) over gravity, capped at `SLOSH.most`, plus a little of its spin (from the
   quaternion step) times `liquid_slosh`; a push beyond `SLOSH.jolt` times gravity grows the ripple. After the recording
   ends the spring settles, and the loop keeps drawing until it rests. Under reduced motion nothing steps.
+- **Particles** (`particles.js`, `DiceBox.shed`): a colorset's `trails` and `impacts` (a kind, or `"theme"`:
+  `matchKind` from the die's material, texture, inner style, liquid and body colour) become each die's `particleLook`
+  in `DiceFactory.create` (kinds, colours, `particle_amount`). One `DiceParticles` pool per box (made the first time a
+  die sheds, sized by `particles`, `PARTICLE_BUDGETS` by device) holds every particle in typed arrays (position,
+  velocity, colour, and age, life, size, unit, angle, seed, kind, alpha), removed by swapping with the last, and one
+  `THREE.Points` (`renderOrder` -1, under the dice; premultiplied `ShaderMaterial` drawing a dot, star, leaf or streak
+  per kind, rotated, sized in world units by `point_scale`). A throw whose dice shed records its impacts even without
+  `onImpact`, each with its world point and dice (`impacts.where`, `impacts.dice`; bodies know their mesh). As
+  `frame` shows a throw's new frame, `shed` walks the steps since the last one: each fast die's trail from its
+  recorded velocity (with a fractional carry, so the rate holds at any frame rate), a settle ring at the step it froze
+  (`settleFrame`, kept by `simulate`), and a burst for every impact due (out from under a die for the table and walls,
+  every way off another die). A finished throw with `flourish` bursts or fizzles over its kept dice. `stepParticles`
+  ages and moves the pool by the real frame time (nothing moves under reduced motion), fills the attributes' update
+  ranges and keeps the loop going until the last particle has been drawn away, and while throws play it arcs between
+  crackling dice that pass close (`arc`: points along a midpoint-displaced bolt, at most every `ARC.every` per pair).
+  `clearDice` empties the pool; pixel dice draw in their own pass, which the pool isn't in.
 - **Neon** (`neonShader`, `DiceFactory.addNeon`): `material: "neon"` is a `MeshPhysicalMaterial` with a light
   clear coat and no diffuse environment light; after `emissivemap_fragment` the body is darkened and the numbers
   (the bump canvas inverted, with a coarse mip of it as a halo) or the whole bevel (`NEON_BEVEL`) add emissive light

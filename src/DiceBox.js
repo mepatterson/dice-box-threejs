@@ -7,6 +7,7 @@ import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { INNER_BUDGETS } from './sparkles.js';
 import { BUBBLE_BUDGETS } from './liquid.js';
+import { DiceParticles, PARTICLE_BUDGETS } from './particles.js';
 import { LAVA_PERIOD } from './lava.js';
 import { ENERGY_PERIOD } from './energy.js';
 import { DiceColors } from './DiceColors.js';
@@ -73,6 +74,9 @@ const defaultConfig = {
 	// Bloom for colorsets that ask for it (`bloom`): "auto" picks its resolution by device (and lowers it, then
 	// turns it off, if it slows the frames down), a number sets its share of the canvas, false leaves it off.
 	bloom: "auto",
+	// The most particles alive at once for colorsets that shed them (`trails`, `impacts`): "auto" by device, a number,
+	// or false for none. See README.
+	particles: "auto",
 	preloadDice: null,
 	themeCache: 8,
 	onRollComplete: () => {},
@@ -174,6 +178,13 @@ function innerBudget(sparkles) {
 	if (sparkles === false) return 0
 	if (Number(sparkles) > 0) return Math.min(1000, Math.round(Number(sparkles)))
 	return INNER_BUDGETS[deviceClass()]
+}
+
+// The particle pool's size: "auto" by device, a number, or 0 for none.
+function particleBudget(particles) {
+	if (particles === false) return 0
+	if (Number(particles) > 0) return Math.min(4000, Math.round(Number(particles)))
+	return PARTICLE_BUDGETS[deviceClass()]
 }
 
 // Bloom's share of the canvas: by device for "auto", a number as given, 0 for none.
@@ -850,6 +861,14 @@ class DiceBox {
 			this.bloomGaps = []
 			if (this.renderer && !this.rolling) this.draw()
 		}
+		if ("particles" in options) {
+			this.particles = options.particles
+			if (this.pool) {
+				this.scene.remove(this.pool.points)
+				this.pool.dispose()
+				this.pool = null
+			}
+		}
 		if ("sparkles" in options) {
 			this.sparkles = options.sparkles
 			this.DiceFactory.innerCount = innerBudget(options.sparkles)
@@ -1279,6 +1298,7 @@ class DiceBox {
 			dicemesh.body.entering = vectordata.enter > 0 ? this.box_body.rightWall : this.box_body.leftWall
 			dicemesh.body.collisionFilterMask = ~dicemesh.body.entering.collisionFilterGroup
 		}
+		dicemesh.body.mesh = dicemesh;
 		dicemesh.body.addEventListener('collide', this.eventCollide.bind(this));
 		this.world.addBody(dicemesh.body);
 		dicemesh.position.copy(dicemesh.body.position);
@@ -1352,8 +1372,12 @@ class DiceBox {
 		body.hitContact = body.clackContact = body.clackWith = null
 	}
 
-	recordImpact(v, dice, { bi, ri }, step) {
-		const point = this.impactPoint.set(bi.position.x + ri.x, bi.position.y + ri.y, bi.position.z + ri.z).project(this.camera)
+	// Each impact also keeps its point in the world and its dice (the die, or both), for particles.
+	recordImpact(v, dice, { bi, bj, ri }, step) {
+		const point = this.impactPoint.set(bi.position.x + ri.x, bi.position.y + ri.y, bi.position.z + ri.z)
+		this.impacts.where.push(point.x, point.y, point.z)
+		this.impacts.dice.push(bi.mass > 0 ? bi.mesh : bj.mesh, dice ? bj.mesh : null)
+		point.project(this.camera)
 		this.impacts.steps.push(step)
 		this.impacts.hits.push({ speed: Math.min(1, v / this.impact.full), die: dice, x: Math.min(1, Math.max(0, (point.x + 1) / 2)), at: 0 })
 	}
@@ -1414,7 +1438,7 @@ class DiceBox {
 			frames.push(frame)
 		}
 		this.recording = []
-		this.impacts = recordImpacts ? { steps: [], hits: [] } : null
+		this.impacts = recordImpacts ? { steps: [], hits: [], where: [], dice: [] } : null
 		this.recordStep = 0
 		record()
 		for (const { body } of dice) {
@@ -1433,6 +1457,7 @@ class DiceBox {
 					done[j] = true
 					left--
 					mesh.storeRolledValue(mesh.rerolling ? 'reroll' : mesh.resultReason)
+					mesh.settleFrame = step
 					mesh.rerolling = false
 					mesh.body.type = CANNON.Body.KINEMATIC
 					mesh.body.velocity.setZero()
@@ -1582,10 +1607,13 @@ class DiceBox {
 	// Simulates a throw to the end, relabels faces for forced results and queues its playback, which
 	// starts a couple of steps ahead so the simulation is done by then. Other throws keep playing.
 	// onImpact is the throw's own listener, in place of the box's.
-	launch(meshes, forced = [], done, onImpact = null) {
+	// flourish: "crit" or "fumble", shown over the throw's kept dice as they settle, if they shed particles.
+	launch(meshes, forced = [], done, onImpact = null, flourish = null) {
 		const dice = meshes.filter(Boolean)
 		const startStep = this.clockStep() + LEAD_STEPS
-		const { frames, sounds, impacts } = this.simulate(dice, startStep, Boolean(onImpact || this.onImpact))
+		const shedding = this.particleBudget() > 0 && dice.some(mesh => mesh.particleLook)
+		const bursts = shedding && dice.some(mesh => mesh.particleLook && mesh.particleLook.impacts)
+		const { frames, sounds, impacts } = this.simulate(dice, startStep, Boolean(onImpact || this.onImpact || bursts))
 		meshes.forEach((mesh, i) => {
 			if (!mesh || forced[i] === undefined || mesh.getLastValue().value == forced[i]) return
 			this.swapDiceFace(mesh, forced[i])
@@ -1595,7 +1623,7 @@ class DiceBox {
 			mesh.track = { frames, j, start: startStep }
 			mesh.liquid.step = this.clockStep()
 		})
-		this.throws.push({ dice, frames, sounds, impacts, onImpact, nextImpact: 0, startStep, frame: -1, done })
+		this.throws.push({ dice, frames, sounds, impacts, onImpact, nextImpact: 0, nextBurst: 0, shedding, flourish, startStep, frame: -1, done })
 		this.rolling = true
 		this.requestFrame()
 	}
@@ -1717,6 +1745,7 @@ class DiceBox {
 			const last = t.frames.length - 1
 			const f = Math.max(0, Math.min(last, step - t.startStep))
 			if (f !== t.frame) {
+				if (t.shedding) this.shed(t, f)
 				const poses = t.frames[f]
 				t.dice.forEach((mesh, j) => {
 					mesh.position.set(poses[j * 7], poses[j * 7 + 1], poses[j * 7 + 2])
@@ -1735,6 +1764,7 @@ class DiceBox {
 					mesh.moving = false
 					if (!mesh.result.length) mesh.storeRolledValue(mesh.resultReason)
 				}
+				if (t.shedding && t.flourish) this.flourishDice(t)
 			}
 			if (!this.throws.length) {
 				this.rolling = false
@@ -1747,6 +1777,8 @@ class DiceBox {
 		if (changed || finished.length) this.dirty = true
 		const sloshing = this.slosh()
 		if (sloshing) this.dirty = true
+		const shedding = this.stepParticles(now)
+		if (shedding) this.dirty = true
 		// inner sparkles keep drifting and lava flowing once the dice have settled, at a gentler rate than the playback
 		const drifting = this.drifting()
 		if (drifting) {
@@ -1761,7 +1793,92 @@ class DiceBox {
 			this.draw()
 			this.lastDraw = now
 		}
-		if (this.throws.length || this.popping() || this.dirty || drifting || sloshing) this.requestFrame()
+		if (this.throws.length || this.popping() || this.dirty || drifting || sloshing || shedding) this.requestFrame()
+	}
+
+	particleBudget() {
+		return particleBudget(this.particles)
+	}
+
+	// The shared particle pool (particles.js), made the first time a die sheds.
+	particlePool() {
+		if (!this.pool) {
+			this.pool = new DiceParticles(this.particleBudget(), this.DiceFactory.point_scale)
+			this.scene.add(this.pool.points)
+		}
+		return this.pool
+	}
+
+	// A throw's particles from the frame last shown to frame f: trails behind its fast dice, a ring where a die came to
+	// rest, and a burst at each of its impacts due by then.
+	shed(t, f) {
+		const pool = this.particlePool()
+		const dt = this.framerate
+		const from = Math.max(1, t.frame + 1)
+		const p = this.shedPoint || (this.shedPoint = { x: 0, y: 0, z: 0 })
+		const v = this.shedVelocity || (this.shedVelocity = { x: 0, y: 0, z: 0 })
+		t.dice.forEach((mesh, j) => {
+			const look = mesh.particleLook
+			if (!look || !mesh.parent) return
+			const unit = mesh.geometry.boundingSphere.radius
+			const o = j * 7
+			if (look.trails) for (let k = from; k <= f; k++) {
+				const a = t.frames[k - 1], b = t.frames[k]
+				p.x = b[o]; p.y = b[o + 1]; p.z = b[o + 2]
+				v.x = (b[o] - a[o]) / dt; v.y = (b[o + 1] - a[o + 1]) / dt; v.z = (b[o + 2] - a[o + 2]) / dt
+				pool.trail(look, unit, p, v, dt)
+			}
+			if (look.impacts && mesh.settleFrame > t.frame && mesh.settleFrame <= f) {
+				const pose = t.frames[Math.min(mesh.settleFrame, t.frames.length - 1)]
+				pool.settle(look, unit, pose[o], pose[o + 1])
+			}
+		})
+		const impacts = t.impacts
+		if (!impacts) return
+		const due = t.startStep + f
+		while (t.nextBurst < impacts.steps.length && impacts.steps[t.nextBurst] <= due) {
+			const k = t.nextBurst++
+			const { speed, die } = impacts.hits[k]
+			p.x = impacts.where[k * 3]; p.y = impacts.where[k * 3 + 1]; p.z = impacts.where[k * 3 + 2]
+			for (const mesh of [impacts.dice[k * 2], impacts.dice[k * 2 + 1]]) {
+				const look = mesh && mesh.particleLook
+				if (!look || !look.impacts || !mesh.parent) continue
+				// off the table or a wall, out from under the die; off another die, every way, a little from each
+				pool.impact(look, mesh.geometry.boundingSphere.radius, p, die ? speed * 0.7 : speed, die ? null : mesh.position)
+			}
+		}
+	}
+
+	// A crit's burst or a fumble's fizzle over the throw's kept dice.
+	flourishDice(t) {
+		const pool = this.particlePool()
+		for (const mesh of t.dice) {
+			const look = mesh.particleLook
+			if (!look || !look.impacts || !mesh.parent || mesh.mark === "dropped") continue
+			pool.flourish(look, mesh.geometry.boundingSphere.radius, mesh.position, t.flourish)
+		}
+	}
+
+	// Ages the pool, after arcs between crackling dice passing close. Returns whether any particle is left to draw.
+	stepParticles(now) {
+		const pool = this.pool
+		if (!pool) return false
+		const dt = this.particleClock ? Math.min(0.05, Math.max(0, (now - this.particleClock) / 1000)) : 0
+		this.particleClock = now
+		if (this.throws.length) {
+			const crackling = this.diceList.filter(mesh => mesh.parent && mesh.particleLook && mesh.particleLook.trails === "crackle")
+			for (let i = 0; i < crackling.length; i++) for (let j = i + 1; j < crackling.length; j++) {
+				const a = crackling[i], b = crackling[j]
+				if (!a.moving && !b.moving) continue
+				pool.arc(`${a.id}|${b.id}`, a.particleLook, a.position, a.geometry.boundingSphere.radius, b.position, b.geometry.boundingSphere.radius, now / 1000)
+			}
+		}
+		if (!pool.live && !pool.points.visible) {
+			this.particleClock = 0
+			return false
+		}
+		// one more frame once the last particle is gone, so it is drawn away
+		return pool.update(dt, this.still) || true
 	}
 
 	// Springs every liquid on the table (liquid.js) through the physics steps since the last frame, driven by its die's
@@ -2039,6 +2156,7 @@ class DiceBox {
 			if (this.pendingWorldBox) this.makeWorldBox();
 		}
 		this.endPop();
+		if (this.pool) this.pool.clear();
 		let dice;
 		while (dice = this.diceList.pop()) {
 			this.scene.remove(dice);
@@ -2069,6 +2187,8 @@ class DiceBox {
 		}
 		if (this.pixelPass) this.pixelPass.dispose();
 		if (this.bloomPass) this.bloomPass.dispose();
+		if (this.pool) this.pool.dispose();
+		this.pool = null;
 		this.pixelPass = null;
 		this.renderer.dispose();
 		this.renderer.forceContextLoss();
@@ -2160,7 +2280,7 @@ class DiceBox {
 		return meshes
 	}
 
-	// roll(notation, { colorset, clear, throwFrom, spread, arc, highlightResult, onImpact }): colorset is a stock colorset name
+	// roll(notation, { colorset, clear, throwFrom, spread, arc, highlightResult, onImpact, flourish }): colorset is a stock colorset name
 	// or a custom colorset (or an array of them, one per die in order, cycled), for this throw only;
 	// clear: false keeps the dice on the table and the throws still rolling, and resolves with the
 	// results of this throw alone.
@@ -2194,7 +2314,7 @@ class DiceBox {
 				this.launch(meshes, notationVectors.result, () => {
 					this.highlightDice(meshes, options.highlightResult)
 					finish()
-				}, options.onImpact)
+				}, options.onImpact, options.flourish)
 			})
 		})
 	}
@@ -2231,7 +2351,7 @@ class DiceBox {
 		})
 	}
 
-	// add(notation, { colorset, throwFrom, spread, arc, highlightResult, onImpact }): throws more dice without clearing the
+	// add(notation, { colorset, throwFrom, spread, arc, highlightResult, onImpact, flourish }): throws more dice without clearing the
 	// table, even while other throws are still rolling, and resolves with the results of its dice.
 	async add(notationSting, options = {}){
 		return this.withThemes(options.colorset, themes => {
@@ -2263,7 +2383,7 @@ class DiceBox {
 					document.dispatchEvent(event)
 
 					resolve(results)
-				}, options.onImpact)
+				}, options.onImpact, options.flourish)
 			})
 		})
 	}

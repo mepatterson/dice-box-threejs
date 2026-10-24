@@ -14,6 +14,7 @@ import {bloomShader} from "./bloom.js"
 import {ENERGY, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader} from "./energy.js"
 import {radialDot} from "./helpers.js"
 import {LIQUID_STYLES, LIQUIDS, LIQUID_LEVEL, LIQUID_SCALE, BUBBLE_BUDGETS, levelOf, sloshState, liquidMaterial, bubbleCloud, bubbleMaterial, applySlosh} from "./liquid.js"
+import {particleLook} from "./particles.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -1074,6 +1075,11 @@ class DiceFactory {
 		dicemesh.inner = inner;
 		dicemesh.liquid = liquid;
 		dicemesh.energy = energy;
+		// what it sheds (particles.js), matched to what it is made of
+		dicemesh.particleLook = !this.pixel && this.colordata && (this.colordata.trails || this.colordata.impacts) ? particleLook(this.colordata, {
+			material: this.dice_material, texture: this.dice_texture_rand || {}, inner: this.dice_inner, liquid: Boolean(liquid),
+			body: this.dice_color_rand, accent: this.dice_accent, liquidColor: this.liquid_color,
+		}) : null;
 		// an energy die is only light: no shadow
 		dicemesh.shadowless = this.dice_material == 'energy';
 		dicemesh.flows = dicemesh.material.some(mat => mat.lavaUniforms) || Boolean(energy && this.energy_look.flow);

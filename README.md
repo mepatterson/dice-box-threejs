@@ -46,6 +46,7 @@ const defaultConfig = {
 	glass_edges: 0.35, // 0 to 1: how much glass bevels stand out
 	environment: "room", // "studio", a URL, or { url, intensity: 1, rotation: 0 }; what metal, glass and clear coats reflect
 	sparkles: "auto", // inner sparkles per glass die that asks for them: by device, a number, or false. See Inner sparkles
+	particles: "auto", // the most particles alive at once off dice that shed them: by device, a number, or false. See Particles
 	fontTimeout: 3000, // ms to wait for a colorset's number font before falling back to the default
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
@@ -309,6 +310,32 @@ the surface. Inner sparkles float in it; the numbers stay painted on the glass, 
 geometry and one of its bubbles (36 on a desktop, 28 on a tablet, 18 on a phone), plus a few multiplications per
 physics step while it sloshes; once still it costs nothing more than its bubbles' 30 frames a second. The pixel style
 leaves the liquid out.
+
+### Particles
+A colorset's `trails` and `impacts` make its dice shed particles: trails behind dice moving fast, and bursts where
+they hit the table, a wall or each other, sized by the impact's speed (the impacts `onImpact` reports, recorded for
+these dice even without a listener), plus a ring along the table as each die comes to rest. Each takes a kind, or
+`"theme"` to match the die's look:
+```
+theme_customColorset: { name: "forge", foreground: "#2b1d0e", background: "#c9a227", outline: "none", material: "metal", trails: "theme", impacts: "theme" }
+box.roll("1d20@20", { flourish: "crit" })
+```
+- `embers` (lava, inner embers), `frost` (inner snow or blizzard, an ice texture, pale blue glass), `leaves` (moss,
+  growth), `glitter` (sparkles, opal, a galaxy), `sparks` (metal), `dust` (stone, bone, wood, leather, obsidian, swirl,
+  pearl, plastic), `splash` (a liquid fill), `crackle` (storm, inner lightning), `glints` (energy, neon, a maelstrom,
+  other glass). `"theme"` picks in that spirit: a liquid first, then storm, lava, moss, sparkles, frost, light, metal,
+  stone; colours follow the accent, the body (dust) or the liquid where they suit.
+- `particle_amount`: 0 to 2, how many (1 when left out).
+- A throw's `flourish` (`roll()` and `add()` options): `"crit"` throws a big burst and a wide ring over its kept dice as
+  they settle, `"fumble"` a fizzle of a few greyed particles that droop off them.
+- Dice with `trails: "crackle"` (or a theme that picks it) passing within about three radii of each other while either
+  moves get a jagged arc between them, drawn anew a dozen times a second.
+
+Every particle lives in one shared pool: the box's `particles` caps how many are alive at once (`"auto"`: 700 on a
+desktop, 450 on a tablet, 260 on a phone; a number; `false` for none), and a burst or trail that would pass it is cut
+short, so a big roll can't flood a phone. They are simulated on the CPU (a few hundred at most) and drawn as one point
+sprite draw under the dice, none living past about a second, so a table at rest draws nothing. Under
+`prefers-reduced-motion` they appear and fade where they are, without moving. Pixel dice don't shed.
 
 ### Glass refraction
 Glass bodies show the environment bent through them and filtered by the glass colour, lit from above as
