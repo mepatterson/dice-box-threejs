@@ -314,7 +314,7 @@ theme_customColorset: { name: "potion", foreground: "#ffffff", background: "#d8d
 
 The surface tilts with the die's motion as it plays back, on a damped spring: shoved sideways the liquid rushes up
 the far side and settles back level over a second or two, and a hard knock also starts a ripple that dies away. The
-meniscus, a thin band along the surface's edge, is a little lighter, and bubbles rise through the liquid and vanish at
+fill line, a bright thin line where the surface meets the glass, shows on every side face and round the surface's edge from above, with a soft glow either side of it; the empty glass above the surface is veiled pale, so full and empty read apart even from straight above. When a throw's recording ends the surface bobs a little and settles in a couple of seconds. Bubbles rise through the liquid and vanish at
 the surface. Inner sparkles float in it; the numbers stay painted on the glass, over the liquid. Under
 `prefers-reduced-motion` the surface stays level and the bubbles hold still. A liquid die costs two draws of its own
 geometry and one of its bubbles (36 on a desktop, 28 on a tablet, 18 on a phone), plus a few multiplications per

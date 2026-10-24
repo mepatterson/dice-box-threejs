@@ -331,7 +331,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   and radius holds `liquid_level` of its volume, by bisection, scaled by the die's pop), plus a ripple along
   `liquidWave`. The body is `FrontSide`; the top is `BackSide` with `LIQUID_TOP`, shaded as a flat surface facing the
   plane's normal: where the front faces are cut away, the back faces below the plane show through and read as the
-  top. Both lighten a band under the plane (`liquidBand`, at least 1.5 pixels by `fwidth`) as the meniscus. They are
+  top. Both draw a crisp pale fill line on the plane (`liquidBand` times 0.45, at least 2 pixels by `fwidth`) with a soft glow and a lighter meniscus band round it; the front faces keep only that line above the plane, while the top's back faces above it draw a pale veil, so the empty glass reads lighter than the filled part. When a throw's recording ends `sloshStep` kicks the spring (`SLOSH.bob`) and starts a small ripple (`SLOSH.bobRipple`), a bob that dies away in a couple of seconds. They are
   premultiplied `ShaderMaterial`s, one per theme, style, colour and side; each part's `onBeforeRender` writes its die's
   plane into the shared uniforms (`applySlosh`, `uniformsNeedUpdate`). A glowing potion in a bloom theme is `blooms`:
   in the bloom pass it writes its glow, and glass materials there write theirs with alpha 0 (`bloomShader`), adding to

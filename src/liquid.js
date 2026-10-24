@@ -16,7 +16,7 @@ export const LIQUID_STYLES = ['water', 'potion']
 // opacity: the body's alpha head-on; deep: how much darker and more opaque it grows towards the rim; glow: the light it
 // gives off; bubbles: the share of the device's bubbles.
 export const LIQUIDS = {
-	water: { color: '#4FA8E0', opacity: 0.5, deep: 0.55, glow: 0, bubbles: 0.4 },
+	water: { color: '#4FA8E0', opacity: 0.8, deep: 0.55, glow: 0, bubbles: 0.4 },
 	potion: { color: '#8B3FD9', opacity: 0.72, deep: 0.8, glow: 0.35, bubbles: 1 },
 }
 export const LIQUID_LEVEL = 0.6
@@ -91,19 +91,20 @@ const FRAGMENT = `
 	${SURFACE}
 	void main() {
 		float below = liquidBelow( vLiquidWorld - vLiquidCentre );
-		float line = max( liquidBand * 0.2, fwidth( below ) * 1.2 );
+		float line = max( liquidBand * 0.45, fwidth( below ) * 2.0 );
 		if ( liquidBloomOnly > 0.5 ) {
 			if ( below < 0.0 ) discard;
 			gl_FragColor = vec4( liquidColor * liquidLook.z * 2.0, 1.0 );
 			return;
 		}
 		float fill = 1.0 - smoothstep( 0.0, line, abs( below ) );
+		float glow = 1.0 - smoothstep( 0.0, liquidBand * 3.5, abs( below ) );
 		vec3 pale = mix( liquidColor, vec3( 1.0 ), 0.85 );
 		#ifdef LIQUID_TOP
 			if ( below < 0.0 ) {
 				// the empty glass above the surface: a pale veil, clearer than the filled part
 				vec3 air = mix( liquidColor, vec3( 1.0 ), 0.6 );
-				float veil = 0.22 * ( 1.0 - fill );
+				float veil = ( 0.22 + 0.3 * glow ) * ( 1.0 - fill );
 				gl_FragColor = vec4( mix( air * veil, pale, fill ), max( veil, fill ) );
 				#include <colorspace_fragment>
 				#include <premultiplied_alpha_fragment>
@@ -119,14 +120,14 @@ const FRAGMENT = `
 		#ifdef LIQUID_TOP
 			float facing = abs( dot( liquidPlane.xyz, view ) );
 			float shine = pow( max( dot( liquidPlane.xyz, normalize( liquidKey + view ) ), 0.0 ), 80.0 );
-			color = mix( liquidColor, vec3( 1.0 ), 0.06 + 0.25 * ( 1.0 - facing ) ) + shine * 0.7;
+			color = mix( liquidColor, vec3( 1.0 ), 0.2 + 0.25 * ( 1.0 - facing ) ) * 1.1 + shine * 0.7;
 			alpha = mix( liquidLook.x + 0.18, 1.0, 0.45 * ( 1.0 - facing ) );
 		#else
 			float facing = abs( dot( normalize( vLiquidNormal ), view ) );
-			color = liquidColor * mix( 0.85, 0.5, liquidLook.y * ( 1.0 - facing ) );
+			color = mix( liquidColor, vec3( 1.0 ), 0.18 ) * mix( 1.1, 0.6, liquidLook.y * ( 1.0 - facing ) );
 			alpha = liquidLook.x + ( 1.0 - liquidLook.x ) * liquidLook.y * 0.6 * ( 1.0 - facing );
 		#endif
-		color = mix( color, mix( liquidColor, vec3( 1.0 ), 0.5 ), rim * 0.8 );
+		color = mix( color, mix( liquidColor, vec3( 1.0 ), 0.5 ), max( rim * 0.8, glow * 0.5 ) );
 		alpha = mix( alpha, 1.0, rim * 0.6 );
 		color = mix( color, pale, fill );
 		alpha = mix( alpha, 1.0, fill );
