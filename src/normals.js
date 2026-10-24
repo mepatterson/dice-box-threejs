@@ -250,7 +250,7 @@ const RELIEFS = {
 	worn: { draw: worn, repeat: 1, scale: 0.7 },
 	scratched: { draw: scratched, repeat: 1.5, scale: 1 },
 	flake: { draw: flake, repeat: 4, scale: 1.2 },
-	weave: { draw: weave, repeat: 6, scale: 0.8 },
+	weave: { draw: weave, repeat: 10, scale: 0.6 },
 }
 
 // A relief's texture, tiled `repeat` times across a face, with the normal scale that suits it.

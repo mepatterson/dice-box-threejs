@@ -80,7 +80,7 @@ export function innerCloud(geometry, count, style, seed = 1) {
 		positions.set([x, y, z], i * 3)
 		const distance = Math.hypot(x, y)
 		const speed = galaxy ? (0.12 + 0.3 * (1 - distance / Math.max(ball, 1e-6))) : style == 'snow' ? 0.08 + 0.08 * next() : 0.12 + 0.12 * next()
-		const size = radius * (galaxy ? 0.16 + 0.22 * next() ** 2 : style == 'snow' ? 0.2 + 0.25 * next() : 0.14 + 0.2 * next())
+		const size = radius * (galaxy ? 0.2 + 0.3 * next() ** 2 : style == 'snow' ? 0.26 + 0.3 * next() : 0.18 + 0.24 * next())
 		sparkle.set([next() * 6.2832, speed, size, next()], i * 4)
 		reach[i] = margin * STRAY
 	}
