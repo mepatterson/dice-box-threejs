@@ -233,7 +233,10 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   front faces, and neither pass overlaps itself on a convex die. `glassShader` (an
   `onBeforeCompile` patch) writes premultiplied colour so reflections are added on top of what
   shows through instead of fading with the alpha, and makes a pixel as opaque as its brightest
-  reflection (so highlights hold over the page). Reflections are three's dielectric ones (no clear
+  reflection (so highlights hold over the page), and never less opaque than its premultiplied colour's
+  brightest channel: WebKit composites a canvas pixel brighter than its alpha as a red or magenta blot.
+  The additive halo and inner sparkles are premultiplied too (`ONE, ONE`), so the alpha they add matches
+  their light. Reflections are three's dielectric ones (no clear
   coat, F0 0.04), untinted, with faint ones cut and strong ones kept; faces count as slightly domed
   for two analytic glints, kept small and soft and capped below white (`1 - exp`) so neither covers a face. The body is the environment seen through the die (`glassSeen`: refracted,
   bent further by the pixel's offset from the die centre, which the vertex shader passes as
@@ -339,7 +342,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   same lookup `getFaceValue` uses; on a d4 the three faces showing the result) for a variant with an
   emissive map of just the number haloed in its colour, cached per material in `glow_cache` and
   freed in `dispose()`, and adds a `Sprite` child just above the up face (on a d4, over the top
-  corner): additive, with one shared soft dot texture (`radialDot` in helpers.js, computed: a canvas gradient's
+  corner): additive and premultiplied (a patch adds the premultiply three's sprite shader leaves out), with one shared soft dot texture (`radialDot` in helpers.js, computed: a canvas gradient's
   soft alpha reached WebGL in WebKit with stray colours that showed as speckles in the glow) and a material per colour
   (`halo_cache`), so it is one extra draw per die and costs no per-die GPU memory. With `style` ink, white
   or gilded (auto picks ink when `glowColor` finds the number dark) the variant also gets the label redrawn

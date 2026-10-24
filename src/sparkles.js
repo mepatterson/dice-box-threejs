@@ -82,11 +82,11 @@ export function innerCloud(geometry, count, style, seed = 1) {
 }
 
 // One material per theme and style: additive soft dots in the sparkle colour, drifting on the shared
-// `time` uniform (seconds).
+// `time` uniform (seconds). Premultiplied, so over the glass the canvas's alpha grows with the light added.
 export function innerMaterial({ map, color, style, time, pixel = false }) {
 	const mat = new THREE.PointsMaterial({
 		map, color: new THREE.Color(color), size: pixel ? 1.6 : 1, sizeAttenuation: true, transparent: true,
-		depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, opacity: style == 'galaxy' ? 0.75 : 0.9,
+		depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, premultipliedAlpha: true, opacity: style == 'galaxy' ? 0.75 : 0.9,
 	})
 	const styleIndex = STYLE[style] ?? 0
 	mat.onBeforeCompile = shader => {

@@ -61,7 +61,8 @@ const defaultConfig = {
 
 // Glass writes premultiplied colour so its reflections are added on top of what shows through the
 // body instead of fading with the body's alpha, and a pixel is as opaque as its brightest
-// reflection, so highlights stay solid over a page behind a transparent canvas. Reflections are
+// reflection, so highlights stay solid over a page behind a transparent canvas; never less opaque than
+// its colour, since WebKit turns a premultiplied pixel brighter than its alpha into coloured blots. Reflections are
 // the dielectric ones (about 4% head-on, strong at grazing angles) and never tinted. The tint is
 // in the light passing through: the body shows the room bent through the die (refracted, then
 // bounced off the table, so it is lit from above), filtered by the glass colour over a path that
@@ -169,8 +170,10 @@ function glassShader(shader, { refraction, edges, opacity }) {
 			#ifdef DICE_GLINT
 				glassSpecular += diceGlint;
 			#endif
+			vec3 glassLit = glassColor * glassCover + glassSpecular;
 			float glassAlpha = glassCover + ( 1.0 - glassCover ) * saturate( max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) ) );
-			gl_FragColor = vec4( ( glassColor * glassCover + glassSpecular ) / max( glassAlpha, 0.0001 ), glassAlpha );
+			glassAlpha = max( glassAlpha, saturate( max( glassLit.r, max( glassLit.g, glassLit.b ) ) ) );
+			gl_FragColor = vec4( glassLit / max( glassAlpha, 0.0001 ), glassAlpha );
 			#ifdef DICE_DIM
 				gl_FragColor.rgb *= 0.6;
 			#endif
@@ -777,13 +780,22 @@ class DiceFactory {
 	// The halo sits just above the up face (on a d4, over the top corner) as a child of the mesh, so
 	// it pops with the die and goes when the die does.
 	// An additive glow vanishes on a light body, so the ink, white and gilded halos are a soft tint instead.
+	// The additive one is premultiplied, so the canvas's alpha grows as much as the light it adds (over
+	// glass, a canvas pixel brighter than its alpha shows as a coloured blot in WebKit).
 	addHalo(mesh, color, intensity, style = 'glow') {
 		if (!this.halo_texture) this.halo_texture = haloTexture();
 		const tinted = style != 'glow';
 		const key = `${color}|${intensity}|${tinted}`;
 		let mat = this.halo_cache.get(key);
 		if (!mat) {
-			mat = new THREE.SpriteMaterial({ map: this.halo_texture, color: new THREE.Color(color), blending: tinted ? THREE.NormalBlending : THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false, opacity: Math.min(1, (tinted ? 0.3 : 0.55) * intensity) });
+			mat = new THREE.SpriteMaterial({ map: this.halo_texture, color: new THREE.Color(color), blending: tinted ? THREE.NormalBlending : THREE.AdditiveBlending, premultipliedAlpha: !tinted, transparent: true, depthTest: false, depthWrite: false, opacity: Math.min(1, (tinted ? 0.3 : 0.55) * intensity) });
+			if (!tinted) {
+				// three's sprite shader leaves out the premultiply
+				mat.onBeforeCompile = shader => {
+					shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>', '#include <fog_fragment>\ngl_FragColor.rgb *= gl_FragColor.a;');
+				};
+				mat.customProgramCacheKey = () => 'halo|premultiplied';
+			}
 			this.halo_cache.set(key, mat);
 		}
 		const radius = mesh.geometry.boundingSphere.radius;
