@@ -74,6 +74,9 @@ const defaultConfig = {
 	// Bloom for colorsets that ask for it (`bloom`): "auto" picks its resolution by device (and lowers it, then
 	// turns it off, if it slows the frames down), a number sets its share of the canvas, false leaves it off.
 	bloom: "auto",
+	// Called with bloomStatus ({ state, scale, full }) whenever "auto" bloom lowers itself or turns off, so an app
+	// can say so. See README.
+	onBloomChange: null,
 	// The most particles alive at once for colorsets that shed them (`trails`, `impacts`): "auto" by device, a number,
 	// or false for none. See README.
 	particles: "auto",
@@ -194,9 +197,12 @@ function bloomScale(bloom) {
 	return BLOOM_SCALES[deviceClass()]
 }
 // While dice roll with bloom on, a median frame gap over SLOW_FRAME ms across BLOOM_SAMPLES frames lowers
-// bloom's resolution, down to BLOOM_LEAST and then off ("auto" only).
-const SLOW_FRAME = 34
+// bloom's resolution, down to BLOOM_LEAST and then off ("auto" only). Under 22 fps is slow: a device held to
+// 30 fps (a battery saver) runs at 33 ms whatever bloom costs. The first BLOOM_SKIP frames of every throw
+// don't count; the first one compiles and uploads, and runs long with or without bloom.
+const SLOW_FRAME = 45
 const BLOOM_SAMPLES = 30
+const BLOOM_SKIP = 10
 
 const reducedMotion = () => typeof matchMedia == "function" && matchMedia("(prefers-reduced-motion: reduce)").matches
 
@@ -297,6 +303,7 @@ class DiceBox {
 		this.pixelPass = null
 		this.bloomPass = null
 		this.bloomGaps = []
+		this.bloomSkip = 0
 		this.bloomed = false
 		this.lastDraw = 0
 		this.dirty = false
@@ -341,7 +348,7 @@ class DiceBox {
 		this.applyFuzz();
 		this.DiceFactory.innerCount = innerBudget(this.sparkles);
 		this.DiceFactory.bubbleCount = BUBBLE_BUDGETS[deviceClass()];
-		this.bloomScale = bloomScale(this.bloom);
+		this.bloomScale = this.bloomFull = bloomScale(this.bloom);
 		this.still = reducedMotion();
 		this.scene.onBeforeRender = () => this.updateFuzz();
 		this.DiceFactory.setRefraction(this.glass_refraction);
@@ -857,8 +864,9 @@ class DiceBox {
 		}
 		if ("bloom" in options) {
 			this.bloom = options.bloom
-			this.bloomScale = bloomScale(options.bloom)
+			this.bloomScale = this.bloomFull = bloomScale(options.bloom)
 			this.bloomGaps = []
+			this.reportBloom()
 			if (this.renderer && !this.rolling) this.draw()
 		}
 		if ("particles" in options) {
@@ -874,6 +882,7 @@ class DiceBox {
 			this.DiceFactory.innerCount = innerBudget(options.sparkles)
 		}
 		if ("onImpact" in options) this.onImpact = options.onImpact
+		if ("onBloomChange" in options) this.onBloomChange = options.onBloomChange
 		if ("impact" in options) this.impact = { ...defaultConfig.impact, ...options.impact }
 		if ("glass_refraction" in options) {
 			this.glass_refraction = options.glass_refraction
@@ -1623,6 +1632,7 @@ class DiceBox {
 			mesh.track = { frames, j, start: startStep }
 			mesh.liquid.step = this.clockStep()
 		})
+		this.bloomSkip = BLOOM_SKIP
 		this.throws.push({ dice, frames, sounds, impacts, onImpact, nextImpact: 0, nextBurst: 0, shedding, flourish, startStep, frame: -1, done })
 		this.rolling = true
 		this.requestFrame()
@@ -1692,13 +1702,29 @@ class DiceBox {
 	// "auto" bloom watches the frames of rolling dice and lowers its resolution, then stops, if they run slow.
 	watchBloom(gap) {
 		if (this.bloom !== "auto" || !this.bloomed || this.bloomScale <= 0) return
+		if (this.bloomSkip > 0) {
+			this.bloomSkip--
+			return
+		}
 		this.bloomGaps.push(gap)
 		if (this.bloomGaps.length < BLOOM_SAMPLES) return
 		const median = this.bloomGaps.sort((a, b) => a - b)[Math.floor(this.bloomGaps.length / 2)]
 		this.bloomGaps = []
 		if (median <= SLOW_FRAME) return
 		this.bloomScale = this.bloomScale * 0.6 < BLOOM_LEAST ? 0 : this.bloomScale * 0.6
-		console.info(this.bloomScale ? `Dice bloom lowered to ${this.bloomScale.toFixed(2)} of the canvas` : "Dice bloom turned off: too slow on this device")
+		console.info(this.bloomScale ? `Dice bloom lowered to ${this.bloomScale.toFixed(2)} of the canvas (median frame ${Math.round(median)} ms)` : `Dice bloom turned off: too slow on this device (median frame ${Math.round(median)} ms)`)
+		this.reportBloom()
+	}
+
+	// Whether bloom runs as set ("on"), lowered its resolution ("lowered"), turned itself off ("off"), or was
+	// never on ("none"); scale is its share of the canvas now, full what it started at.
+	get bloomStatus() {
+		const state = this.bloomFull <= 0 ? "none" : this.bloomScale >= this.bloomFull ? "on" : this.bloomScale > 0 ? "lowered" : "off"
+		return { state, scale: this.bloomScale, full: this.bloomFull }
+	}
+
+	reportBloom() {
+		if (this.onBloomChange) this.onBloomChange(this.bloomStatus)
 	}
 
 	pixels() {

@@ -109,17 +109,27 @@ The lines are one small geometry per die type (about 600 triangles on a d20) and
 
 A colorset's `bloom` (a strength, 1 the usual; 0 or left out for none) makes what glows on its dice bloom:
 lava's cracks, neon tubes, energy's lines, and on other textures the result glow. Only those dice are drawn again, writing
-nothing but their own glow, into a small half-float target that three's `UnrealBloomPass` blurs, and the
-blur is laid over the canvas as premultiplied light whose opacity is its brightness (at most 0.65, so a
-number under its glow stays crisp). Over the page it reads as glow in its own colour, with no dark fringe
-and no box. Pixel dice never bloom.
+nothing but their own glow, into a small half-float target that three's `UnrealBloomPass` blurs (no luminance
+threshold: everything in it glows, deep reds included), and the blur is laid over the canvas as premultiplied
+light whose opacity rises with its brightness, screened over the dice so a white number under its glow stays
+white. Over the page it reads as glow in its own colour, with no dark fringe and no box. At 1 it is a clear halo
+round the glowing parts; 2 blazes. Pixel dice never bloom.
 ```
 theme_customColorset: { name: "hyper", foreground: "#ffffff", background: "#1a1030", outline: "none", material: "neon", accent: "#ff2bd6", bloom: 1 }
 ```
 The box's `bloom` option sets what it costs: `"auto"` (the default) draws it at half the canvas's resolution on
 a desktop, 0.4 on a tablet and 0.3 on a phone, and while dice roll with bloom it lowers that by 40% each time
-30 frames run at a median over 34 ms, down to 0.12 of the canvas, then turns bloom off for the box (and says
-so in the console). A number (0 to 1) sets the share and never adapts; `false` leaves bloom off.
+30 frames run at a median over 45 ms (under 22 fps, so a device held to 30 fps never trips it; the first 10 frames
+of each throw don't count), down to 0.12 of the canvas, then turns bloom off for the box (and says so in the
+console). A number (0 to 1) sets the share and never adapts; `false` leaves bloom off.
+
+`box.bloomStatus` says where it stands: `{ state, scale, full }`, with `state` `"on"`, `"lowered"`, `"off"` (it
+turned itself off) or `"none"` (the `bloom` option is off), `scale` its share of the canvas now and `full` what it
+started at. The `onBloomChange` option is called with it each time "auto" bloom lowers itself or turns off, and
+when `updateConfig` sets `bloom` again (which starts it over), so an app can tell its viewer:
+```
+const box = new DiceBox("#dice", { onBloomChange: ({ state }) => note.hidden = state !== "off" })
+```
 
 ### Procedural textures
 Twelve textures are generated in code instead of loaded from `public/textures`, so they need no asset

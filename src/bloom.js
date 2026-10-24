@@ -7,15 +7,22 @@ import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js"
 // nothing but their emissive light (lava's cracks, neon tubes, the result glow). After the canvas is drawn
 // as usual, that layer is drawn again on its own into a small half-float target, three's UnrealBloomPass
 // blurs it, and the blur is laid over the canvas as premultiplied light: its alpha is its brightest
-// channel, so over the page it reads as glow in its own colour, never as a dark fringe or a box.
+// channel, so over the page it reads as glow in its own colour, never as a dark fringe or a box. It screens
+// over the dice (light, never a veil), so a white number under the glow stays white.
 
 export const BLOOM_LAYER = 2
 // Bloom renders at this share of the canvas by device (it is a blur, so it hardly shows), and halves its
 // share again while the frames it adds run slow.
 export const BLOOM_SCALES = { desktop: 0.5, tablet: 0.4, phone: 0.3 }
 const LEAST = 0.12
-const PASS = { radius: 0.3, threshold: 0.35, strength: 0.22 }
-const FACTORS = [1, 0.75, 0.45, 0.15, 0]
+// Everything in the bloom target is glow, so nothing is thresholded out: a luminance threshold dropped the
+// deep reds and oranges of lava's cracks, which are dim by luminance however bright they look.
+// Radius 0 keeps FACTORS as they are (the pass's radius pulls every mip towards 1.2 - its factor, which
+// washes a haze across the page); the widest mips only add a touch of that.
+const PASS = { radius: 0, threshold: 0, strength: 0.36 }
+const FACTORS = [1, 0.8, 0.55, 0.3, 0.08]
+// How quickly the glow's brightness turns to cover: 1 - exp(-GAIN * glow), so a faint wide halo still shows.
+const GAIN = 2.2
 
 // A material that glows on its own (lava, neon: their `diceGlow`) blooms only that, so the result glow
 // over its numbers stays readable; any other blooms its whole emissive light, the result glow included.
@@ -31,26 +38,26 @@ export function bloomShader(shader, only) {
 }
 
 const COMPOSITE = new THREE.ShaderMaterial({
-	uniforms: { tBloom: { value: null } },
+	uniforms: { tBloom: { value: null }, gain: { value: GAIN } },
 	vertexShader: 'varying vec2 vUv;\nvoid main() { vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }',
-	// the glow never quite hides what it lies over, so a bloomed number stays crisp under its glow
 	fragmentShader: `
-		#define CAP 0.65
 		uniform sampler2D tBloom;
+		uniform float gain;
 		varying vec2 vUv;
 		void main() {
 			vec3 glow = max( texture2D( tBloom, vUv ).rgb, vec3( 0.0 ) );
 			float peak = max( glow.r, max( glow.g, glow.b ) );
-			float alpha = clamp( peak, 0.0, CAP );
+			float alpha = 1.0 - exp( - gain * peak );
 			vec3 hue = glow / max( peak, 0.0001 );
 			hue = mix( hue * 12.92, 1.055 * pow( hue, vec3( 1.0 / 2.4 ) ) - 0.055, step( 0.0031308, hue ) );
 			// a little noise breaks the faint wide glow's 8-bit steps into grain instead of rings
 			alpha = max( alpha + ( fract( sin( dot( gl_FragCoord.xy, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 ) - 0.5 ) / 255.0, 0.0 );
 			gl_FragColor = vec4( hue * alpha, alpha );
 		}`,
+	// screen: colour = glow + under * (1 - glow), which stays premultiplied (never brighter than its alpha)
 	blending: THREE.CustomBlending,
 	blendSrc: THREE.OneFactor,
-	blendDst: THREE.OneMinusSrcAlphaFactor,
+	blendDst: THREE.OneMinusSrcColorFactor,
 	blendSrcAlpha: THREE.OneFactor,
 	blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
 	depthTest: false,
@@ -62,7 +69,6 @@ export class DiceBloom {
 	constructor() {
 		this.source = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false })
 		this.pass = new UnrealBloomPass(new THREE.Vector2(1, 1), PASS.strength, PASS.radius, PASS.threshold)
-		// the widest mips only add a faint haze across the page
 		this.pass.compositeMaterial.uniforms.bloomFactors.value = FACTORS
 		this.composite = COMPOSITE.clone()
 		this.quad = new FullScreenQuad(this.composite)
