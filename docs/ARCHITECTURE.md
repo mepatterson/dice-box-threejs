@@ -18,6 +18,8 @@ die land on a value chosen in advance.
 | `src/shapes.js` | Shaped dice (`shape: { edges, dish }`): rounded or sharp edges and dished faces, drawn over the plain physics shape. |
 | `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth) and the wood grain. |
 | `src/fuzz.js` | Fur shells for fuzzy textures: the strand field, shell geometry and shell material. |
+| `src/normals.js` | Procedural normal maps: the metal grains (brushed, hammered, worn) and the coats (scratched, flake, weave). |
+| `src/sparkles.js` | Inner sparkles for glass dice: the point cloud inside a die's hull and its drifting material. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
@@ -236,12 +238,15 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   with a floor so it shows in a dark room, stronger at grazing angles and kept off the numbers. The paint mask is
   the label alpha above the body's (`GLASS_OPACITY`), used linearly. Glass shadows are lighter.
 - **Environment** (`DiceBox.makeEnvironment`): a PMREM built once, when a colorset first needs
-  it, and freed in `dispose()`. The default (`makeStudio`) is a small dark studio (a low band of
-  light and a few soft panels). With `environment: {url}` it is an equirectangular photo instead:
+  it, and freed in `dispose()`. The default (`makeRoom`, `"room"`) is three's procedural `RoomEnvironment`
+  with a few bright panels added (`ROOM_PANELS`) for crisp highlights on tilted facets, prefiltered with
+  `fromScene`; it is y-up and brighter than this scene wants, so its materials get the same stood-up
+  `envMapRotation` as a photo and its intensity is scaled by `ROOM_GAIN`. `"studio"` (`makeStudio`) is
+  the older small dark studio (a low band of light and a few soft panels). With `environment: {url}` it is an equirectangular photo instead:
   `.hdr` goes through `HDRLoader`; an LDR image is drawn to a canvas and turned into a half-float
   texture with its near-white pixels scaled up (`HIGHLIGHT_GAIN`), so lamps and windows act as light
   sources. Photos are y-up, so their materials get an `envMapRotation` that stands them up in this
-  z-up scene, plus the option's azimuth. A failed load falls back to the studio. It is never the
+  z-up scene, plus the option's azimuth. A failed load falls back to the room. It is never the
   scene background. Materials whose preset has an `envMapIntensity` (all but unknown ones) reflect it and
   remember that preset value (`envBase`); `setEnvironment` builds the new PMREM, points every cached
   material at it (`DiceFactory.setEnvironment`), frees the old one and renders once.
@@ -253,6 +258,32 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   as a paint mask: numbers are matte and non-metallic. The mask is used close to linearly and metal
   has no bump map, since a bump or a hard threshold at the number edges mirrored stray bits of the
   room as sparkles. `brushedmetal` is a `MeshPhysicalMaterial` with anisotropy.
+- **Reliefs** (`normals.js`, `DiceFactory.relief`): tiling 256px normal maps drawn once per box from
+  height fields (central differences; `flake` is written straight as per-cell normals) and shared by
+  every theme, each a `DataTexture` with the tangent-space normal in rgb and half a roughness factor in
+  alpha, repeated `repeat` times across a face with its own `scale`. A metal colorset's `grain`
+  (`addGrain`) sets the relief as the material's `normalMap` and `roughnessMap`: `metalShader` reads the
+  roughness from the alpha (times two) and flattens the normal where the paint mask says number
+  (`mapN.xy *= normalScale * (1 - metalPaint)`), so the numbers stay crisp. A colorset's `coat`
+  (`addCoat`) sets it as the `clearcoatNormalMap`, separate from the surface's own bump; a preset
+  without a clear coat (metal, glass, moss) gets `LIGHT_COAT` first (`materialPreset`), which makes it a
+  `MeshPhysicalMaterial`. On glass `glassShader` adds the clear coat's specular to the glass reflections
+  (`glassPainted` is the diffuse and emissive light directly, so the coat never leaks into the body).
+  The pixel style skips both. Freed in `dispose()`.
+- **Inner sparkles** (`sparkles.js`, `DiceFactory.innerPoints`): a glass colorset's `inner` (snow, galaxy,
+  embers) gives each die a `THREE.Points` child, created between the interior and the die so its id sorts
+  it after the back faces and before the front ones, which it reads through. `innerCloud` samples
+  `innerCount` points (the box's `sparkles` budget by device, `INNER_BUDGETS`) inside the cannon hull's
+  planes shrunk to `SHRINK` of their distance (a galaxy inside the ball that fits them, as a thin disc),
+  with per-point `sparkle` (phase, speed, size, seed) and `reach`, the most a sprite may drift, cached
+  per die type, style and count in `INNER_LAYOUTS` layouts. The material (`innerMaterial`, one per theme
+  and style, in `materials`) is a `PointsMaterial` with the shared soft `dotTexture`, additive, no depth,
+  patched to move each point in the vertex shader from one shared uniform (`drift_time`): snow and
+  embers run along the world's up (the model matrix transposed) fading out and in at the ends of a run,
+  a galaxy turns about the die's z, and all twinkle; `gl_PointSize` scales by the point's own size.
+  `DiceBox.frame` advances the clock and keeps requesting frames while any die on the table drifts
+  (`drifting`), drawing at `DRIFT_FPS` once nothing else moves, never under `prefers-reduced-motion`
+  (`still`). Clouds and the dot are freed in `dispose()`.
 - **Bump canvases** upload as one channel (`RedFormat`, a quarter of the bytes): the bump height and
   the metal paint mask only need red. Labels with glitter flecks keep RGBA, since the flecks' glint and
   tilt live in the other channels. Glass without flecks never samples that canvas, so it gets no texture.

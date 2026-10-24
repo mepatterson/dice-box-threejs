@@ -44,7 +44,8 @@ const defaultConfig = {
 	glass_opacity: 0.35, // how much of what's behind a glass die its body hides, 0 to 1
 	glass_refraction: true, // false | { ior: 1.5, strength: 1, dispersion: 0.02 }: the room seen through glass
 	glass_edges: 0.35, // 0 to 1: how much glass bevels stand out
-	environment: "studio", // or a URL, or { url, intensity: 1, rotation: 0 }; what metal and glass reflect
+	environment: "room", // "studio", a URL, or { url, intensity: 1, rotation: 0 }; what metal, glass and clear coats reflect
+	sparkles: "auto", // inner sparkles per glass die that asks for them: by device, a number, or false. See Inner sparkles
 	fontTimeout: 3000, // ms to wait for a colorset's number font before falling back to the default
 	highlightResult: false, // true | { glow: true | number, pop: true }: light up the result when dice settle
 	throwFrom: "any", // "sides" | "left" | "right": where dice come in from
@@ -75,8 +76,8 @@ colorset can set its own:
 ```
 theme_customColorset: { name: "amber", foreground: "#F2743B", background: "#3A2418", outline: "#1A0E07", material: "glass", glass_opacity: 0.5 }
 ```
-Metal, glass, plastic and wood reflect a small studio environment the box generates once, the first
-time a colorset needs it.
+Metal, glass, plastic and wood reflect a room environment the box generates once, the first time a
+colorset needs it (see Reflection environment).
 
 ### Plastic and wood
 Plastic (`none`, or `plastic`) is glossy acrylic: a clear coat with faint reflections that get stronger
@@ -146,8 +147,15 @@ theme_customColorset: { name: "sapphire", foreground: "#ffffff", background: "#2
 On glass it costs one more environment lookup and thin-film evaluation per pixel, only for iridescent dice.
 
 ### Reflection environment
-`environment` swaps the studio for a photo of a room, used only for reflections (and glass
-refraction). It is never drawn as a background, so the canvas stays transparent:
+Metal, glass, clear coats and the glass refraction reflect an environment the box builds once in
+code, the first time a colorset needs it. It is never drawn as a background, so the canvas stays
+transparent. `environment` picks it:
+- `"room"` (the default): three's procedural `RoomEnvironment` (a lit room with a few boxes), stood up
+  for this scene with a few soft light panels hung in it, so metal reads as satin with crisp highlights
+  on tilted facets and glass stays clear. `{ url: "room", intensity: 1.4 }` scales it (0 to 2 is a
+  sensible range: dull to bright) and `rotation` turns it.
+- `"studio"`: the older dark studio, a low band of light and a few panels, with harder contrast.
+- a photo of a room:
 ```
 environment: { url: "/img/room.jpg", intensity: 1, rotation: 0 }
 ```
@@ -157,9 +165,9 @@ environment: { url: "/img/room.jpg", intensity: 1, rotation: 0 }
 - `intensity` scales the reflections, `rotation` spins the room around the vertical axis (radians).
 - The image loads once, when a metal or glass colorset first needs it; `initialize()` (and
   `updateConfig()`) wait for it, so the first dice already reflect the room. If it fails to load the
-  box falls back to the studio and logs a warning.
+  box falls back to the room and logs a warning.
 - Swap it at runtime, for example when a page toggles between a dark and a light theme:
-  `await box.setEnvironment({ url: "/img/day.jpg" })` or `await box.updateConfig({ environment: "studio" })`.
+  `await box.setEnvironment({ url: "/img/day.jpg" })` or `await box.updateConfig({ environment: "room" })`.
   The cached materials switch over, the old environment is freed and the dice are drawn once.
 
 ### Metal
@@ -168,6 +176,46 @@ is satin with a directional sheen. The body colour tints the metal: a gold or si
 gold or silver and dark brown gives copper. A dark grey or blue-grey body (for example `#3B444B`) stays
 dark, for gunmetal, and black gives blackened steel. Numbers are painted on as matte,
 non-metallic enamel so they stay readable against the reflections.
+
+A metal colorset's `grain` gives the metal a surface, drawn in code as a tiling normal map:
+```
+theme_customColorset: { name: "pewter", foreground: "#1B2A41", background: "#C8D1DC", outline: "none", material: "metal", grain: "hammered" }
+```
+- `brushed`: fine parallel streaks, the roughness streaky with them.
+- `hammered`: overlapping shallow dents with ridges where they meet.
+- `worn`: soft dents, a few scratches and small pits, rougher in the pits.
+
+The grain is flattened under the numbers, so they stay crisp. The three maps are 256px, made once per
+box and shared by every theme. The pixel style leaves them out.
+
+### Coats
+`coat` gives a clear coat its own normal map, separate from whatever bump the surface has under it:
+```
+theme_customColorset: { name: "candy", foreground: "#FFFFFF", background: "#8B1E3F", outline: "#2a0a14", coat: "flake" }
+```
+- `scratched`: fine hairline scratches, most along two directions.
+- `flake`: metallic flake, tiny facets each tilted its own way, so the coat glints in scattered points.
+- `weave`: a carbon-fibre weave of round tows.
+
+Plastic and wood have a clear coat already; a metal, glass or matte texture (moss) gets a light one
+(`clearcoat` 0.6) when a coat is picked. On glass the coat's reflections join the glass's own. The pixel
+style leaves coats out.
+
+### Inner sparkles
+A glass colorset's `inner` fills the die with a cloud of soft sparkles, drawn in code as point sprites inside
+the die's own shape, in `inner_color` or else the accent (white, or ember for embers, without one):
+```
+theme_customColorset: { name: "snow globe", foreground: "#1B3A2A", background: "#8FD3C0", outline: "none", material: "glass", glass_opacity: 0.5, inner: "snow", inner_color: "#FFFFFF" }
+```
+- `snow` sinks slowly, swaying, as seen from inside the tumbling die: down is the world's down.
+- `galaxy` is a thin disc of dust that turns about the die's own axis, faster near the middle.
+- `embers` rise, glowing warm.
+
+Each sparkle twinkles a little, and they keep drifting after the dice settle (at 30 frames a second, so a
+table with sparkling glass on it keeps rendering until it is cleared). Under `prefers-reduced-motion` they
+hold still but still show. `sparkles` sets how many per die: `"auto"` by device (260 on a desktop, 180 on a
+tablet, 110 on a phone), a number, or `false` for none. The cloud is one small geometry per die type (a few
+shared layouts), an additive draw per die; the dice's physics never see it.
 
 ### Glass refraction
 Glass bodies show the environment bent through them and filtered by the glass colour, lit from above as
