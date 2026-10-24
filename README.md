@@ -497,7 +497,7 @@ the same faces; only how they are drawn changes.
 ```javascript
 box.roll("1d20+2d6", { colorset: { foreground: "#ffe0c0", background: "#b8321c", outline: "#2a0a04", texture: "swirl", pixel: true } })
 // every option, with its default
-pixel: { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps: 0, fuzz: false }
+pixel: { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps: 0, fuzz: false, edges: false }
 ```
 - **Low resolution.** Pixel dice render into a target at a fraction of the canvas, so a die of `baseScale`
   is about `size` pixels across, and it is drawn over the canvas with nearest filtering. The grid is fixed
@@ -520,6 +520,10 @@ pixel: { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps
   and dimmed, otherwise in the number's own colours.
 - **Choppy motion.** `fps` (4 to 30, 12 is "on twos") redraws at that rate while the dice move; the
   playback still runs at full rate and the last pose always shows.
+- **Edges.** `edges: true` borrows three's `RenderPixelatedPass`: where two faces of a die meet, the pixel on
+  the nearer side lights up a step, and a die's border over another die further back darkens a step, so every
+  crease reads as a bright pixel line. It costs one more render of the pixel dice at the pixel resolution
+  (their normals) and a few texel reads per pixel in the post pass.
 - **Fuzz.** Fur shells are off in the pixel style (at this size they only roughen the outline); `fuzz: true`
   keeps them.
 

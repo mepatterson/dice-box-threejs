@@ -11,12 +11,16 @@ import * as THREE from "three"
 // - Their materials light in `bands` flat steps (`pixelShader`) with crisp highlights, so each face
 //   reads as one facet, and their labels are drawn small in a bitmap font (`drawPixelLabel`), sampled
 //   with nearest filtering.
+// - With `edges`, borrowed from three's RenderPixelatedPass: the dice are drawn once more into a normal
+//   target at the same low resolution, and where two faces of a die meet (their normals differ, on the
+//   nearer side) the pixel lights up a step, while a die's border over another die further back darkens a
+//   step, so every crease reads as a bright pixel line, then both snap to the palette like the rest.
 // Dice of other themes keep drawing at full resolution in the same frame, under the pixel dice.
 
 export const PIXEL_LAYER = 1
 export const MAX_PALETTE = 64
 
-export const PIXEL_DEFAULTS = { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps: 0, fuzz: false }
+export const PIXEL_DEFAULTS = { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps: 0, fuzz: false, edges: false }
 
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x))
 
@@ -34,6 +38,7 @@ export function pixelOf(colordata) {
 		outline: o.outline ?? PIXEL_DEFAULTS.outline,
 		fps: number(o.fps, 0) > 0 ? clamp(number(o.fps, 0), 4, 30) : 0,
 		fuzz: Boolean(o.fuzz),
+		edges: Boolean(o.edges),
 	}
 }
 
@@ -358,6 +363,9 @@ const POST_FRAGMENT = `
 	uniform float dither;
 	uniform vec4 outline;
 	uniform float shadowAlpha;
+	uniform sampler2D tNormal;
+	uniform vec3 edges;
+	uniform vec2 depthRange;
 
 	const float BAYER[ 16 ] = float[ 16 ]( 0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0 );
 
@@ -418,6 +426,35 @@ const POST_FRAGMENT = `
 		return vec4( toSRGB( c.rgb / max( c.a, 1e-4 ) ), c.a );
 	}
 
+	// View distance from the depth texture (a perspective camera's near and far).
+	float distanceAt( ivec2 p ) {
+		float z = texelFetch( tDepth, p, 0 ).r * 2.0 - 1.0;
+		return 2.0 * depthRange.x * depthRange.y / ( depthRange.y + depthRange.x - z * ( depthRange.y - depthRange.x ) );
+	}
+
+	// RenderPixelatedPass's edges: +1 where faces meet on the nearer side (a crease to light), -1 on a die's
+	// border over something further back (to shade), 0 elsewhere. edges: x on, y the distance that counts as
+	// a step between dice, z the crease's sensitivity.
+	float edgeAt( ivec2 p, ivec2 size ) {
+		float depth = distanceAt( p );
+		vec3 normal = texelFetch( tNormal, p, 0 ).rgb * 2.0 - 1.0;
+		float drop = 0.0;
+		float crease = 0.0;
+		ivec2 around[ 4 ] = ivec2[ 4 ]( ivec2( 1, 0 ), ivec2( - 1, 0 ), ivec2( 0, 1 ), ivec2( 0, - 1 ) );
+		for ( int i = 0; i < 4; i ++ ) {
+			ivec2 q = p + around[ i ];
+			if ( ! solid( q, size ) ) continue;
+			float behind = distanceAt( q ) - depth;
+			drop += clamp( behind / edges.y, 0.0, 1.0 );
+			vec3 other = texelFetch( tNormal, q, 0 ).rgb * 2.0 - 1.0;
+			float facing = smoothstep( - 0.01, 0.01, dot( normal - other, vec3( 1.0 ) ) );
+			float nearer = behind > - 0.08 * edges.y ? 1.0 : 0.0;
+			crease += ( 1.0 - dot( normal, other ) ) * facing * nearer;
+		}
+		if ( drop > 0.5 ) return - 1.0;
+		return crease > edges.z ? 1.0 : 0.0;
+	}
+
 	void main() {
 		ivec2 p = ivec2( gl_FragCoord.xy );
 		ivec2 size = textureSize( tColor, 0 );
@@ -441,6 +478,11 @@ const POST_FRAGMENT = `
 			return;
 		}
 		vec4 c = colorAt( p );
+		if ( edges.x > 0.0 ) {
+			float edge = edgeAt( p, size );
+			if ( edge > 0.0 ) c.rgb = min( c.rgb * 1.45 + 0.12, vec3( 1.0 ) );
+			else if ( edge < 0.0 ) c.rgb *= 0.6;
+		}
 		vec3 rgb = snap( c.rgb, threshold );
 		float alpha = c.a > 0.94 ? 1.0 : clamp( floor( c.a * 3.0 + threshold ) / 3.0, 1.0 / 3.0, 1.0 );
 		gl_FragColor = vec4( rgb * alpha, alpha );
@@ -481,6 +523,9 @@ export class PixelPass {
 		const nearest = { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false }
 		this.target = new THREE.WebGLRenderTarget(1, 1, { ...nearest, colorSpace: THREE.SRGBColorSpace, depthBuffer: true, depthTexture: new THREE.DepthTexture(1, 1) })
 		this.output = new THREE.WebGLRenderTarget(1, 1, { ...nearest, depthBuffer: false })
+		this.normals = null
+		this.normalMaterial = null
+		this.hidden = []
 		const palette = () => Array.from({ length: MAX_PALETTE }, () => new THREE.Vector3())
 		this.post = new THREE.ShaderMaterial({
 			vertexShader: QUAD_VERTEX,
@@ -494,6 +539,9 @@ export class PixelPass {
 				dither: { value: PIXEL_DEFAULTS.dither },
 				outline: { value: new THREE.Vector4(0, 0, 0, 2) },
 				shadowAlpha: { value: 0.5 },
+				tNormal: { value: null },
+				edges: { value: new THREE.Vector3(0, 1, 0.1) },
+				depthRange: { value: new THREE.Vector2(1, 1000) },
 			},
 			blending: THREE.NoBlending,
 			depthTest: false,
@@ -532,9 +580,11 @@ export class PixelPass {
 
 	// palettes: [{ rgb, lab }] lists, merged in order; outline: "auto", false or a colour. strict: the palette
 	// was given as a list, so stamps snap to it too; otherwise they keep their own colours.
-	setLook({ palettes, dither, outline, shadowAlpha, strict = false }) {
+	setLook({ palettes, dither, outline, shadowAlpha, strict = false, edges = false, edgeStep = 1 }) {
 		this.strict = strict
 		const uniforms = this.post.uniforms
+		this.edges = edges
+		uniforms.edges.value.set(edges ? 1 : 0, edgeStep, 0.03)
 		const key = palettes.map(list => list.length + list.map(c => c.rgb.join()).join(";")).join("|")
 		if (key !== this.paletteKey) {
 			this.paletteKey = key
@@ -645,7 +695,39 @@ export class PixelPass {
 		for (let i = dice.length; i < this.stampMeshes.length; i++) this.stampMeshes[i].visible = false
 	}
 
-	render(renderer, scene, camera, scale, stamped = []) {
+	// The dice's view-space normals at the pixel resolution, for the edges: only the dice themselves (`dice`),
+	// with the table and their children hidden.
+	renderNormals(renderer, scene, camera, dice) {
+		const { width, height } = this.target
+		if (!this.normals) {
+			this.normals = new THREE.WebGLRenderTarget(width, height, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false, depthBuffer: true })
+			this.normalMaterial = new THREE.MeshNormalMaterial()
+			this.post.uniforms.tNormal.value = this.normals.texture
+		}
+		if (this.normals.width !== width || this.normals.height !== height) this.normals.setSize(width, height)
+		const keep = new Set(dice)
+		this.hidden.length = 0
+		scene.traverse(object => {
+			if (object.visible && !keep.has(object) && (object.isMesh || object.isPoints || object.isSprite) && object.layers.isEnabled(PIXEL_LAYER)) {
+				object.visible = false
+				this.hidden.push(object)
+			}
+		})
+		const shadows = renderer.shadowMap.autoUpdate
+		try {
+			renderer.shadowMap.autoUpdate = false
+			scene.overrideMaterial = this.normalMaterial
+			renderer.setRenderTarget(this.normals)
+			renderer.render(scene, camera)
+		} finally {
+			scene.overrideMaterial = null
+			renderer.shadowMap.autoUpdate = shadows
+			this.hidden.forEach(object => { object.visible = true })
+		}
+		this.post.uniforms.depthRange.value.set(camera.near, camera.far)
+	}
+
+	render(renderer, scene, camera, scale, stamped = [], dice = []) {
 		renderer.getDrawingBufferSize(this.size)
 		const W = Math.max(1, this.size.x), H = Math.max(1, this.size.y)
 		const w = Math.ceil(W / scale), h = Math.ceil(H / scale)
@@ -665,6 +747,7 @@ export class PixelPass {
 			renderer.setRenderTarget(this.target)
 			renderer.autoClear = true
 			renderer.render(scene, camera)
+			if (this.edges) this.renderNormals(renderer, scene, camera, dice)
 			this.quad.material = this.post
 			renderer.setRenderTarget(this.output)
 			renderer.render(this.quadScene, this.quadCamera)
@@ -689,6 +772,8 @@ export class PixelPass {
 		this.target.depthTexture.dispose()
 		this.target.dispose()
 		this.output.dispose()
+		if (this.normals) this.normals.dispose()
+		if (this.normalMaterial) this.normalMaterial.dispose()
 		this.post.dispose()
 		this.blit.dispose()
 		this.quad.geometry.dispose()

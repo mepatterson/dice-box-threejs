@@ -414,6 +414,12 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   (`stampResult`: the result upright in the bitmap font, the up face swapped for a variant without its
   number, `bareMaterial`) are drawn into that image as quads one texel per pixel at the up face's projected
   point, then the image is drawn over the canvas, `scale` x `scale` blocks with premultiplied blending.
+  With a theme's `pixel.edges` (any pixel theme on the table turns it on), `renderNormals` draws the pixel dice
+  alone (the table and their children hidden, shadow maps not updated) with a `MeshNormalMaterial` override into
+  a normal target of the same size, and the post pass's `edgeAt` (after three's RenderPixelatedPass) compares each
+  solid pixel's view distance (the depth texture linearised with the camera's near and far) and normal with its four
+  neighbours: a neighbour more than a quarter of `baseScale` further back darkens it, and a neighbour on another
+  face, on the nearer side, lights it, before the palette snap.
   `pixelShader` patches the lighting chunks: banded `dotNL`, specular and clear coat in quarter steps. Pixel
   labels (`createPixelLabel`) are the body and texture shrunk to `labelTexels` texels (one per pixel of a die
   face up at the theme's size), drawn back up at `PIXEL_UNIT` canvas pixels per texel, with the numbers
