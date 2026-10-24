@@ -7,6 +7,8 @@ import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
 import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
 import {pixelOf, buildPalette, fontFor, paintLabels, rgba, nearestTexture, pixelShader} from "./pixel.js"
+import {GRAINS, COATS, makeRelief} from "./normals.js"
+import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -21,6 +23,10 @@ const PIXEL_INK = '#140c08';
 const WHITE_INK = '#FFFFFF';
 // A dropped pixel die's number, darkened like dimShader does its body.
 const dimColor = color => `#${new THREE.Color(color).multiplyScalar(0.6).getHexString()}`;
+// The light clear coat a coat (normals.js) turns on over a material that has none: metal, glass, a matte finish.
+const LIGHT_COAT = { clearcoat: 0.6, clearcoatRoughness: 0.12 };
+// Inner sparkle clouds are shared per die type: this many layouts, so neighbouring dice differ.
+const INNER_LAYOUTS = 3;
 
 const defaultConfig = {
 	baseScale: 100,
@@ -80,7 +86,10 @@ function glassShader(shader, { refraction, edges, opacity }) {
 			float glassFacing = saturate( dot( geometryNormal, geometryViewDir ) );
 			float glassDepth = max( glassRim * glassRim, 1.0 - glassFacing );
 			vec3 glassSpecular = totalSpecular;
-			vec3 glassPainted = outgoingLight - glassSpecular;
+			vec3 glassPainted = totalDiffuse + totalEmissiveRadiance;
+				#ifdef USE_CLEARCOAT
+					glassSpecular += ( clearcoatSpecularDirect + clearcoatSpecularIndirect ) * material.clearcoat;
+				#endif
 			float glassPeak = max( diffuseColor.r, max( diffuseColor.g, diffuseColor.b ) );
 			vec3 glassTint = diffuseColor.rgb / max( glassPeak, 0.0001 );
 			vec3 glassFilter = pow( glassTint, vec3( 0.8 + 0.7 * glassDepth ) ) * pow( glassPeak, 0.35 + 0.25 * glassDepth );
@@ -170,10 +179,20 @@ const PICKS = ['dice_color_rand', 'label_color_rand', 'label_outline_rand', 'dic
 // gunmetal or blackened steel instead of turning silver. The label's bump canvas doubles as a paint mask: where the numbers are drawn
 // (black) the surface is matte non-metallic paint, so they stay readable against reflections. The
 // mask is used close to linearly so its edges stay as smooth as the texture filtering makes them.
+// A grain (normals.js) is the metal's normal map, flattened where the paint is so the numbers stay
+// crisp, and its alpha (half the factor) scales the roughness.
 const METAL_FLOOR = 0.42;
 const METAL_DARK_FLOOR = 0.14;
 function metalShader(shader) {
-	shader.fragmentShader = shader.fragmentShader.replace('#include <metalnessmap_fragment>', `
+	shader.fragmentShader = shader.fragmentShader
+		.replace('#include <roughnessmap_fragment>', `
+			float roughnessFactor = roughness;
+			#ifdef USE_ROUGHNESSMAP
+				roughnessFactor *= texture2D( roughnessMap, vRoughnessMapUv ).a * 2.0;
+			#endif
+		`)
+		.replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace('mapN.xy *= normalScale;', 'mapN.xy *= normalScale * ( 1.0 - metalPaint );'))
+		.replace('#include <metalnessmap_fragment>', `
 		float metalnessFactor = metalness;
 		float metalPaint = 0.0;
 		#ifdef USE_METALNESSMAP
@@ -315,6 +334,15 @@ class DiceFactory {
 		this.shell_matrix = null;
 		this.shell_sets = new WeakMap();
 		this.no_fuzz = new THREE.MeshBasicMaterial({ visible: false });
+		this.reliefs = new Map();
+		this.dice_grain = null;
+		this.dice_coat = null;
+		this.dice_inner = null;
+		this.inner_color = '';
+		this.inner_clouds = new Map();
+		this.innerCount = INNER_BUDGETS.desktop;
+		this.dot_texture = null;
+		this.drift_time = { value: 0 };
 
 		this.material_options = {
 			specular: 0x777777,
@@ -349,6 +377,12 @@ class DiceFactory {
 		if (this.halo_texture) this.halo_texture.dispose();
 		if (this.strand_field) this.strand_field.dispose();
 		this.strand_field = null;
+		this.reliefs.forEach(relief => relief.texture.dispose());
+		this.reliefs = new Map();
+		this.inner_clouds.forEach(cloud => cloud.dispose());
+		this.inner_clouds = new Map();
+		if (this.dot_texture) this.dot_texture.dispose();
+		this.dot_texture = null;
 		this.shell_sets = new WeakMap();
 		this.geometries = {};
 		this.themes = new Map();
@@ -854,9 +888,13 @@ class DiceFactory {
 		// Glass shows its back faces through the front ones. Created first, the interior has the
 		// lower id, so at the same depth it draws before the faces.
 		const interior = this.dice_material == 'glass' ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
+		// Inner sparkles come between the back and front faces, so they read as inside the glass.
+		const inner = interior && this.dice_inner && this.innerCount > 0 ? this.innerPoints(type, geom) : null;
 		let dicemesh = new THREE.Mesh(geom, this.createMaterials(diceobj, this.baseScale / 2, 1.0));
 		if (interior) dicemesh.add(interior);
+		if (inner) dicemesh.add(inner);
 		dicemesh.interior = interior;
+		dicemesh.inner = inner;
 		dicemesh.result = [];
 		dicemesh.shape = diceobj.shape;
 		dicemesh.rerolls = 0;
@@ -927,6 +965,41 @@ class DiceFactory {
 
 		if (diceobj.values.length <= 3) this.fixmaterials(dicemesh, diceobj.values.length);
 		return this.addFuzz(dicemesh);
+	}
+
+	// A glass die's inner sparkles (sparkles.js): a cloud of soft points inside its hull, in one of a few
+	// shared layouts per die type, drifting on the box's clock.
+	innerPoints(type, geom) {
+		const style = this.dice_inner;
+		const layout = (this.inner_layout = ((this.inner_layout || 0) + 1) % INNER_LAYOUTS);
+		const key = `${type}|${style}|${this.innerCount}|${layout}`;
+		let cloud = this.inner_clouds.get(key);
+		if (!cloud) {
+			cloud = innerCloud(geom, this.innerCount, style, layout + 1);
+			this.inner_clouds.set(key, cloud);
+		}
+		const points = new THREE.Points(cloud, this.innerMaterial(style));
+		points.frustumCulled = false;
+		points.castShadow = false;
+		points.raycast = () => {};
+		return points;
+	}
+
+	innerMaterial(style) {
+		const color = this.inner_color;
+		const key = `inner|${style}|${color}|${Boolean(this.pixel)}`;
+		let mat = this.mesh_materials_cache.get(key);
+		if (mat) return mat;
+		if (!this.dot_texture) this.dot_texture = dotTexture();
+		mat = innerMaterial({ map: this.dot_texture, color, style, time: this.drift_time, pixel: Boolean(this.pixel) });
+		mat.diceTheme = this.theme;
+		this.mesh_materials_cache.set(key, mat);
+		return mat;
+	}
+
+	// Whether any die in `meshes` has inner sparkles to drift.
+	drifts(meshes) {
+		return meshes.some(mesh => mesh.inner && mesh.parent);
 	}
 
 	// A die whose texture grows fuzz gets its fur shells (fuzz.js) as a child, so they follow its pose
@@ -1119,6 +1192,10 @@ class DiceFactory {
 			}
 			const surface = this.dice_texture_rand.surface && this.surfaces.get(this.dice_texture_rand.surface);
 			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
+			if (!this.pixel) {
+				if (this.dice_grain && isMetal(this.dice_material)) this.addGrain(mat, this.dice_grain);
+				if (this.dice_coat && mat.clearcoat > 0) this.addCoat(mat, this.dice_coat);
+			}
 			if (preset && preset.envMapIntensity) {
 				mat.envBase = mat.envMapIntensity;
 				this.applyEnvironment(mat);
@@ -1150,7 +1227,35 @@ class DiceFactory {
 		if (this.dice_iridescence !== null && (this.dice_material == 'none' || this.dice_material == 'glass')) {
 			preset = { iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 520], ...preset, iridescence: this.dice_iridescence };
 		}
+		// a coat needs a clear coat to sit in; a material without one gets a light one
+		if (this.dice_coat && preset && !this.pixel && !preset.clearcoat) preset = { ...preset, ...LIGHT_COAT };
 		return preset;
+	}
+
+	// A shared relief (normals.js), drawn the first time it is needed.
+	relief(name) {
+		let relief = this.reliefs.get(name);
+		if (!relief) {
+			relief = makeRelief(name);
+			relief.texture.anisotropy = this.maxAnisotropy;
+			this.reliefs.set(name, relief);
+		}
+		return relief;
+	}
+
+	// Metal grain: the relief as the metal's normal map and, through its alpha, its roughness.
+	addGrain(mat, name) {
+		const { texture, scale } = this.relief(name);
+		mat.normalMap = texture;
+		mat.normalScale.set(scale, scale);
+		mat.roughnessMap = texture;
+	}
+
+	// A coat: the relief as the clear coat's own normal map, over whatever bump the surface has.
+	addCoat(mat, name) {
+		const { texture, scale } = this.relief(name);
+		mat.clearcoatNormalMap = texture;
+		mat.clearcoatNormalScale.set(scale, scale);
 	}
 
 	glints(mesh) {
@@ -1858,6 +1963,10 @@ class DiceFactory {
 		this.dice_iridescence = typeof colordata.iridescence == 'number' ? Math.min(1, Math.max(0, colordata.iridescence)) : null;
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 		this.pixel = pixelOf(colordata);
+		this.dice_grain = GRAINS.includes(colordata.grain) ? colordata.grain : null;
+		this.dice_coat = COATS.includes(colordata.coat) ? colordata.coat : null;
+		this.dice_inner = INNER_STYLES.includes(colordata.inner) ? colordata.inner : null;
+		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : '#FFFFFF');
 	}
 
 	// pass in colorset data from dice-box

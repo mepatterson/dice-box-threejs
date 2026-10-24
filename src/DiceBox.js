@@ -4,6 +4,8 @@ import * as CANNON from "cannon-es"
 import { DiceNotation } from './DiceNotation.js';
 import { DiceFactory, isMetal } from './DiceFactory.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { INNER_BUDGETS } from './sparkles.js';
 import { DiceColors } from './DiceColors.js';
 import { fontOf, loadFont } from './fonts.js';
 import { THEMES } from './const/themes.js';
@@ -44,7 +46,9 @@ const defaultConfig = {
 	glass_opacity: 0.35,
 	glass_refraction: true,
 	glass_edges: 0.35,
-	environment: "studio",
+	// What metal, glass and clear coats reflect: "room" (a procedural studio room), "studio" (the older dark
+	// studio), a URL, or { url, intensity, rotation }. See README.
+	environment: "room",
 	fontTimeout: 3000,
 	highlightResult: false,
 	throwFrom: "any",
@@ -59,6 +63,9 @@ const defaultConfig = {
 	// Fur shells for fuzzy textures (moss, growth): "auto" picks how many by device, a number caps the shells
 	// per die, false leaves the fuzz to the bump map. See README.
 	fuzz: "auto",
+	// Inner sparkles in glass dice whose colorset asks for them (`inner`): "auto" picks how many by device, a
+	// number sets it, false leaves them out. See README.
+	sparkles: "auto",
 	preloadDice: null,
 	themeCache: 8,
 	onRollComplete: () => {},
@@ -86,8 +93,15 @@ const ENV_PANELS = [
 // An LDR photo clips its lamps and windows at white; pixels near white are scaled up to this many
 // times brighter so they light metal and glass the way they would in an HDR.
 const HIGHLIGHT_GAIN = 6
+// The room environment is built for a brighter scene than this one: scaled down to match the studio's metal.
+const ROOM_GAIN = 0.75
+// Soft light panels hung in the room (azimuth and elevation in degrees, size and brightness), so tilted
+// facets catch crisp highlights the room's even walls alone don't give.
+const ROOM_PANELS = [[140, 35, 3, 9], [20, 45, 2.5, 7], [-70, 30, 2, 6], [-160, 50, 3, 5]]
 const POP_MS = 350
 const POP_SCALE = 0.12
+// Inner sparkles drift at this rate once nothing else moves, and never under prefers-reduced-motion.
+const DRIFT_FPS = 30
 const SWEEP_MS = 800
 const TWINKLE_MS = 1100
 // A throw's playback starts this many physics steps after it is simulated, so the simulation is
@@ -122,14 +136,28 @@ const FUZZ_BUDGETS = {
 	phone: { most: 8, budget: 60, least: 5 },
 }
 
-function fuzzBudget(fuzz) {
-	if (fuzz === false || !(fuzz === "auto" || fuzz === true || Number(fuzz) > 0)) return { most: 0, budget: 0, least: 0 }
+// A phone or a tablet is told by its coarse pointer and its screen's short side.
+function deviceClass() {
 	const coarse = typeof matchMedia == "function" && matchMedia("(pointer: coarse)").matches
 	const short = typeof screen == "object" ? Math.min(screen.width, screen.height) : Infinity
-	const device = FUZZ_BUDGETS[coarse ? (short < 600 ? "phone" : "tablet") : "desktop"]
+	return coarse ? (short < 600 ? "phone" : "tablet") : "desktop"
+}
+
+function fuzzBudget(fuzz) {
+	if (fuzz === false || !(fuzz === "auto" || fuzz === true || Number(fuzz) > 0)) return { most: 0, budget: 0, least: 0 }
+	const device = FUZZ_BUDGETS[deviceClass()]
 	const most = Math.min(MAX_SHELLS, Number(fuzz) > 0 ? Math.round(Number(fuzz)) : device.most)
 	return { ...device, most, least: Math.min(device.least, most) }
 }
+
+// Inner sparkles per die: "auto" by device, a number, or false for none.
+function innerBudget(sparkles) {
+	if (sparkles === false) return 0
+	if (Number(sparkles) > 0) return Math.min(1000, Math.round(Number(sparkles)))
+	return INNER_BUDGETS[deviceClass()]
+}
+
+const reducedMotion = () => typeof matchMedia == "function" && matchMedia("(prefers-reduced-motion: reduce)").matches
 
 const materialOf = colordata => {
 	const material = colordata?.texture?.material || 'none'
@@ -267,6 +295,8 @@ class DiceBox {
 		});
 		this.DiceFactory.setBumpMapping(true);
 		this.applyFuzz();
+		this.DiceFactory.innerCount = innerBudget(this.sparkles);
+		this.still = reducedMotion();
 		this.scene.onBeforeRender = () => this.updateFuzz();
 		this.DiceFactory.setRefraction(this.glass_refraction);
 		this.DiceFactory.setGlassEdges(this.glass_edges);
@@ -555,7 +585,8 @@ class DiceBox {
 		const options = typeof environment === "string" ? { url: environment } : (environment || {})
 		const pmrem = new THREE.PMREMGenerator(this.renderer)
 		try {
-			if (options.url && options.url !== "studio") {
+			if (!options.url || options.url === "room") return { target: this.makeRoom(pmrem), rotation: new THREE.Euler(Math.PI / 2, 0, options.rotation || 0, "ZYX"), intensity: (options.intensity ?? 1) * ROOM_GAIN }
+			if (options.url !== "studio") {
 				try {
 					const texture = await this.loadEquirect(options.url)
 					if (this.disposed) throw new Error("disposed")
@@ -614,7 +645,30 @@ class DiceBox {
 		return texture
 	}
 
-	// The default environment: a dark studio with a band of light low around it and soft panels at
+	// The default environment: three's procedural RoomEnvironment (a lit room with a few boxes, as
+	// model-viewer uses), prefiltered once. It is y-up, so like a photo it is stood up for this z-up
+	// scene, and it is brighter than the studio, so ROOM_GAIN scales it to match.
+	makeRoom(pmrem) {
+		const room = new RoomEnvironment()
+		const plane = new THREE.PlaneGeometry(1, 1)
+		const panels = ROOM_PANELS.map(([azimuth, elevation, size, brightness]) => {
+			const a = azimuth * Math.PI / 180, e = elevation * Math.PI / 180
+			const panel = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({ color: new THREE.Color(brightness, brightness, brightness), side: THREE.DoubleSide }))
+			// the room is y-up: elevation rises along y
+			panel.position.set(Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a)).multiplyScalar(10)
+			panel.lookAt(0, 0, 0)
+			panel.scale.setScalar(size)
+			room.add(panel)
+			return panel
+		})
+		const target = pmrem.fromScene(room, 0.04)
+		panels.forEach(panel => panel.material.dispose())
+		plane.dispose()
+		room.dispose()
+		return target
+	}
+
+	// The older environment ("studio"): a dark studio with a band of light low around it and soft panels at
 	// mid height, so tilted facets and edges catch highlights while faces turned to the camera stay
 	// clear.
 	makeStudio(pmrem) {
@@ -735,6 +789,10 @@ class DiceBox {
 			this.fuzz = options.fuzz
 			this.applyFuzz()
 			if (this.renderer && !this.rolling) this.draw()
+		}
+		if ("sparkles" in options) {
+			this.sparkles = options.sparkles
+			this.DiceFactory.innerCount = innerBudget(options.sparkles)
 		}
 		if ("onImpact" in options) this.onImpact = options.onImpact
 		if ("impact" in options) this.impact = { ...defaultConfig.impact, ...options.impact }
@@ -1584,13 +1642,24 @@ class DiceBox {
 		if (this.animatePops(now)) changed = true
 		this.applyPixelRatio()
 		if (changed || finished.length) this.dirty = true
+		// inner sparkles keep drifting once the dice have settled, at a gentler rate than the playback
+		const drifting = this.drifting()
+		if (drifting) {
+			this.DiceFactory.drift_time.value = now / 1000
+			if (!this.dirty && now - this.lastDraw >= 1000 / DRIFT_FPS - 2) this.dirty = true
+		}
 		// choppy pixel dice redraw at their fps while the playback runs at full rate; the last pose always shows
 		const fps = this.dirty && !finished.length ? this.choppyFps() : 0
 		if (this.dirty && (!fps || now - this.lastDraw >= 1000 / fps - 2)) {
 			this.draw()
 			this.lastDraw = now
 		}
-		if (this.throws.length || this.popping() || this.dirty) this.requestFrame()
+		if (this.throws.length || this.popping() || this.dirty || drifting) this.requestFrame()
+	}
+
+	// Whether any die on the table has inner sparkles to keep moving (never under reduced motion).
+	drifting() {
+		return !this.still && this.DiceFactory.drifts(this.diceList)
 	}
 
 	// Hands onImpact the throw's impacts that are due within IMPACT_LEAD_MS, each with `at`, the
