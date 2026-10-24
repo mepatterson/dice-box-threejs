@@ -95,6 +95,11 @@ const ENV_PANELS = [
 const HIGHLIGHT_GAIN = 6
 // The room environment is built for a brighter scene than this one: scaled down to match the studio's metal.
 const ROOM_GAIN = 0.75
+// The room is tipped this far (radians) so its ceiling light sits off the zenith: a face lying flat under the
+// camera reflects an upper wall and stays readable, and the light shows on faces tilted towards one side.
+const ROOM_TILT = 1.2
+// How much of the room's own ceiling light is kept.
+const ROOM_LIGHT = 0.45
 // Soft light panels hung in the room (azimuth and elevation in degrees, size and brightness), so tilted
 // facets catch crisp highlights the room's even walls alone don't give.
 const ROOM_PANELS = [[140, 35, 3, 9], [20, 45, 2.5, 7], [-70, 30, 2, 6], [-160, 50, 3, 5]]
@@ -585,7 +590,7 @@ class DiceBox {
 		const options = typeof environment === "string" ? { url: environment } : (environment || {})
 		const pmrem = new THREE.PMREMGenerator(this.renderer)
 		try {
-			if (!options.url || options.url === "room") return { target: this.makeRoom(pmrem), rotation: new THREE.Euler(Math.PI / 2, 0, options.rotation || 0, "ZYX"), intensity: (options.intensity ?? 1) * ROOM_GAIN }
+			if (!options.url || options.url === "room") return { target: this.makeRoom(pmrem), rotation: new THREE.Euler(Math.PI / 2 + ROOM_TILT, 0, options.rotation || 0, "ZYX"), intensity: (options.intensity ?? 1) * ROOM_GAIN }
 			if (options.url !== "studio") {
 				try {
 					const texture = await this.loadEquirect(options.url)
@@ -650,6 +655,7 @@ class DiceBox {
 	// scene, and it is brighter than the studio, so ROOM_GAIN scales it to match.
 	makeRoom(pmrem) {
 		const room = new RoomEnvironment()
+		room.traverse(object => { if (object.isLight) object.intensity *= ROOM_LIGHT })
 		const plane = new THREE.PlaneGeometry(1, 1)
 		const panels = ROOM_PANELS.map(([azimuth, elevation, size, brightness]) => {
 			const a = azimuth * Math.PI / 180, e = elevation * Math.PI / 180

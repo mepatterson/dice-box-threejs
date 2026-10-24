@@ -241,7 +241,10 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   it, and freed in `dispose()`. The default (`makeRoom`, `"room"`) is three's procedural `RoomEnvironment`
   with a few bright panels added (`ROOM_PANELS`) for crisp highlights on tilted facets, prefiltered with
   `fromScene`; it is y-up and brighter than this scene wants, so its materials get the same stood-up
-  `envMapRotation` as a photo and its intensity is scaled by `ROOM_GAIN`. `"studio"` (`makeStudio`) is
+  `envMapRotation` as a photo, tipped a further `ROOM_TILT` so its ceiling light sits off the zenith (a die
+  lying flat under the camera reflects the zenith across its whole up face, which would wash the number out;
+  tipped, the light shows on facets tilted to one side instead), its own light at `ROOM_LIGHT` of its
+  strength and its intensity scaled by `ROOM_GAIN`. `"studio"` (`makeStudio`) is
   the older small dark studio (a low band of light and a few soft panels). With `environment: {url}` it is an equirectangular photo instead:
   `.hdr` goes through `HDRLoader`; an LDR image is drawn to a canvas and turned into a half-float
   texture with its near-white pixels scaled up (`HIGHLIGHT_GAIN`), so lamps and windows act as light

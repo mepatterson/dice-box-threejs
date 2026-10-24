@@ -151,7 +151,8 @@ Metal, glass, clear coats and the glass refraction reflect an environment the bo
 code, the first time a colorset needs it. It is never drawn as a background, so the canvas stays
 transparent. `environment` picks it:
 - `"room"` (the default): three's procedural `RoomEnvironment` (a lit room with a few boxes), stood up
-  for this scene with a few soft light panels hung in it, so metal reads as satin with crisp highlights
+  and tipped for this scene (so a die lying flat reflects a wall, not the ceiling light, and its number
+  stays readable) with a few soft light panels hung in it, so metal reads as satin with crisp highlights
   on tilted facets and glass stays clear. `{ url: "room", intensity: 1.4 }` scales it (0 to 2 is a
   sensible range: dull to bright) and `rotation` turns it.
 - `"studio"`: the older dark studio, a low band of light and a few panels, with harder contrast.
