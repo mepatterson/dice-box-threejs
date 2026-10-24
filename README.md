@@ -28,7 +28,7 @@ const defaultConfig = {
 	sound_dieMaterial: 'plastic',
 	theme_customColorset: null,
 	theme_colorset: "white", // see available colorsets in https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/colorsets.js
-	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian" | "sparkles" | "moss", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
+	theme_texture: "", // "bone" | "swirl" | "stone" | "pearl" | "opal" | "obsidian" | "sparkles" | "moss" | "growth", or an image texture from https://github.com/3d-dice/dice-box-threejs/blob/main/src/const/texturelist.js
 	theme_material: "glass", // "none" | "metal" | "wood" | "glass" | "plastic"
 	gravity_multiplier: 400, // gravity is 9.8 times this; updateConfig changes it for the throws that follow
 	light_intensity: 0.7,
@@ -51,7 +51,7 @@ const defaultConfig = {
 	spread: 1, // 0 to 1: how much the dice of one side throw differ in where they come in, speed and heading
 	arc: 0, // 0 to 1: how high dice hop as they are thrown; 0 low along the table, 1 a hop of about two radii
 	shape: null, // { edges, dish }: sharp to worn edges and concave faces; a colorset's own shape wins. See Shapes
-	fuzz: "auto", // fur shells on fuzzy textures (moss): "auto" by device, a number of shells per die, or false. See Fuzz
+	fuzz: "auto", // fur shells on fuzzy textures (moss, growth): "auto" by device, a number of shells per die, or false. See Fuzz
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	themeCache: 8, // themes (colorsets) kept ready beyond those on the table; see Several players on one table
 	onRollComplete: () => {},
@@ -118,6 +118,13 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   green-stained rock round them and fine shadows between the stems. A matte finish with a faint sheen,
   and a bump that raises the moss over the rock. Its fuzz grows real strands that stand off the die's
   edges (see Fuzz). Grey, slate and brown bodies make good rock; light numbers read best.
+- `growth`: moss in the colorset's `accent`. The same cushions, rock, bump, finish and fuzz as moss,
+  with every green moved to the accent in OKLCH: the accent stands in for moss's light green on top of
+  the cushions, and the deep base, mid tone, bright tips, damp stain, shadows, sheen and strands keep
+  the lightness steps, chroma ratios and hue turns they have from it in moss. So `accent: "#6f9a34"` (or
+  no accent) is moss, a red accent grows red moss, and a grey one grey. Nothing keeps the colours
+  readable against the body or the numbers; a very light or very dark accent pushes the ramp to white
+  or black.
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }
@@ -370,7 +377,7 @@ marks, glass and metal all work on every shape. `node bench/run.mjs --shapes` dr
 every die type in each shape.
 
 ### Fuzz
-A texture with a `fuzz` entry (moss has one) grows short strands that stand off the die's silhouette,
+A texture with a `fuzz` entry (moss and growth have one) grows short strands that stand off the die's silhouette,
 since a bump map can only shade inside it. The die is drawn a few more times as fur shells, each pushed a
 little further out, keeping only the pixels inside a strand; the strands thin and lighten towards their
 tips. They grow where the surface's fuzz field says (moss: thick where its cushions are thick, none on bare

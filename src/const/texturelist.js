@@ -1,3 +1,6 @@
+const MOSS_FINISH = { roughness: 0.88, clearcoat: 0, clearcoatRoughness: 1, sheen: 0.3, sheenColor: '#b4c792', sheenRoughness: 0.8, envMapIntensity: 0.15 };
+const MOSS_FUZZ = { shells: 16, length: 0.12, density: 36, thickness: 0.55, lean: 0.3, taper: 0.7, fade: 0.7, root: 1, color: '#4a7326', tint: 0.5, tip: '#d4e48a', tipMix: 0.4 };
+
 export const TEXTURELIST = {
 	'cloudy': {
 		name: 'Clouds (Transparent)',
@@ -274,8 +277,19 @@ export const TEXTURELIST = {
 		source: '',
 		source_bump: '',
 		material: 'none',
-		finish: { roughness: 0.88, clearcoat: 0, clearcoatRoughness: 1, sheen: 0.3, sheenColor: '#b4c792', sheenRoughness: 0.8, envMapIntensity: 0.15 },
-		fuzz: { shells: 16, length: 0.12, density: 36, thickness: 0.55, lean: 0.3, taper: 0.7, fade: 0.7, root: 1, color: '#4a7326', tint: 0.5, tip: '#d4e48a', tipMix: 0.4 }
+		finish: MOSS_FINISH,
+		fuzz: MOSS_FUZZ
+	},
+	// moss in the accent's colours: with `shades` its sheen and strand colours move to the accent too
+	'growth': {
+		name: 'Growth',
+		surface: 'growth',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		finish: MOSS_FINISH,
+		fuzz: MOSS_FUZZ,
+		shades: true
 	},
 	'none': {
 		name: 'none',

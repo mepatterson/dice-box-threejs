@@ -56,7 +56,7 @@ const defaultConfig = {
 	// The dice's shape, { edges, dish }: edges 0 (sharp) to 1 (rounded and worn), left out for the classic
 	// bevel; dish 0 to 1 for concave faces on the dice that have them. A colorset's own shape wins. See README.
 	shape: null,
-	// Fur shells for fuzzy textures (moss): "auto" picks how many by device, a number caps the shells
+	// Fur shells for fuzzy textures (moss, growth): "auto" picks how many by device, a number caps the shells
 	// per die, false leaves the fuzz to the bump map. See README.
 	fuzz: "auto",
 	preloadDice: null,

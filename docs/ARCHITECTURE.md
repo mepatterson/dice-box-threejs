@@ -16,7 +16,7 @@ die land on a value chosen in advance.
 | `src/DiceColors.js` | Resolves a colorset (stock or custom) and loads its texture images. |
 | `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
 | `src/shapes.js` | Shaped dice (`shape: { edges, dish }`): rounded or sharp edges and dished faces, drawn over the plain physics shape. |
-| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles, moss) and the wood grain. |
+| `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth) and the wood grain. |
 | `src/fuzz.js` | Fur shells for fuzzy textures: the strand field, shell geometry and shell material. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
@@ -171,7 +171,11 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   light, along `PLAY` (mostly blue, green and violet, as in opal and abalone, no yellow-green), or within 70 degrees of
   a coloured accent's OKLCH hue. The body sets a tone: pale bodies get softer, thinner colour, near-black opaque ones
   lighter, fuller colour. An accent layer can name a `fallback` colour for colorsets without an accent
-  (obsidian's pale silver). A surface with a `glint` canvas (obsidian, sparkles) marks its flecks in the bump
+  (obsidian's pale silver), or a `shade`: a fixed colour it moves to the accent (`shade` in surfaces.js, OKLCH
+  lightness shifted, chroma scaled and hue turned by what takes `MOSS_GREEN` to the accent, chroma cut to fit
+  the gamut). Growth is moss's generator with each green as such a layer; its texture entry has `shades`, so
+  `DiceFactory.shaded` also moves its finish's `sheenColor` and its fuzz `color` and `tip`. With no accent it
+  shades to moss green, which gives moss back. A surface with a `glint` canvas (obsidian, sparkles) marks its flecks in the bump
   canvas (red 1, green the fleck's tilt direction, blue 1 minus its glint, so red minus blue is the glint, zero on
   the white background and the black numbers, and the red bump height is untouched); on plastic and glass
   `addGlint` gives the material that canvas as `glintMap` and `glintShader` (run before the glass patch) turns each

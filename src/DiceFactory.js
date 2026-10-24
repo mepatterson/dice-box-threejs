@@ -2,7 +2,7 @@
 import {DicePreset} from './DicePreset.js'
 import {MATERIALTYPES} from "./const/materialtypes"
 import {DICE_GEOM} from "./const/dice"
-import {woodGrain, makeSurface, spectrumLayer} from "./surfaces.js"
+import {woodGrain, makeSurface, spectrumLayer, shade, MOSS_GREEN} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
 import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
@@ -1111,7 +1111,8 @@ class DiceFactory {
 			}
 			if (canvasTextures && canvasTextures.fuzz) {
 				mat.fuzzMap = canvasTextures.fuzz;
-				mat.fuzz = this.dice_texture_rand.fuzz;
+				const fuzz = this.dice_texture_rand.fuzz;
+				mat.fuzz = fuzz && this.dice_texture_rand.shades ? { ...fuzz, color: this.shaded(fuzz.color || FUZZ_DEFAULTS.color), tip: this.shaded(fuzz.tip || FUZZ_DEFAULTS.tip) } : fuzz;
 			}
 			const surface = this.dice_texture_rand.surface && this.surfaces.get(this.dice_texture_rand.surface);
 			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
@@ -1136,7 +1137,8 @@ class DiceFactory {
 	// (0 to 1) sets or adds that film on plastic and glass.
 	materialPreset() {
 		let preset = MATERIALTYPES[this.dice_material];
-		const finish = this.dice_texture_rand && this.dice_texture_rand.finish;
+		let finish = this.dice_texture_rand && this.dice_texture_rand.finish;
+		if (finish && finish.sheenColor && this.dice_texture_rand.shades) finish = { ...finish, sheenColor: this.shaded(finish.sheenColor) };
 		if (finish && this.dice_material == 'none') preset = { ...preset, ...finish };
 		if (finish && finish.iridescence && this.dice_material == 'glass') {
 			const { iridescence, iridescenceIOR, iridescenceThicknessRange } = finish;
@@ -1784,7 +1786,8 @@ class DiceFactory {
 		const tone = lightness > 0.55 ? 'pale' : lightness < 0.15 && this.dice_material != 'glass' ? 'deep' : 'clear';
 		surface.layers.forEach((layer, k) => {
 			const spectrum = layer.color == 'spectrum' || (layer.hue && this.dice_rainbow);
-			const image = spectrum ? this.tintedLayer(name, k, layer, this.dice_accent && `#${new THREE.Color(this.dice_accent).getHexString()}`, tone) : layer.color == 'accent' ? this.tintedLayer(name, k, layer, this.dice_accent || layer.fallback || accent) : layer.mask;
+			const tint = layer.shade ? this.shaded(layer.shade) : this.dice_accent || layer.fallback || accent;
+			const image = spectrum ? this.tintedLayer(name, k, layer, this.dice_accent && `#${new THREE.Color(this.dice_accent).getHexString()}`, tone) : layer.color == 'accent' ? this.tintedLayer(name, k, layer, tint) : layer.mask;
 			context.globalAlpha = glass ? layer.glass || surface.glass || 0.5 : 1;
 			this.drawPattern(context, image, ts, index);
 		});
@@ -1795,6 +1798,12 @@ class DiceFactory {
 			this.drawPattern(contextBump, surface.height, ts, index);
 			contextBump.globalAlpha = 1;
 		}
+	}
+
+	// One of moss's colours moved to the colorset's accent (surfaces.js `shade`), for a texture whose
+	// colours follow the accent. With no accent it stays as it is, so the texture looks like moss.
+	shaded(color) {
+		return shade(color, this.dice_accent ? `#${new THREE.Color(this.dice_accent).getHexString()}` : MOSS_GREEN);
 	}
 
 	// An accent layer's white mask in the colorset's accent, or, given a tone, its hue field in the

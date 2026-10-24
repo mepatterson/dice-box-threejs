@@ -1,8 +1,8 @@
 // Procedural surfaces, generated once per box and drawn into every face label of a colorset that
 // uses them. Each uses its own random numbers, so seeded throws repeat. A surface is a set of
 // layers (an alpha mask with a colour, drawn over the body colour; "accent" is the colorset's
-// accent or a lighter body colour, "spectrum" a colour per pixel from a hue field) and an optional
-// height field drawn faintly into the bump canvas.
+// accent or a lighter body colour, or with `shade` that colour moved to the accent, "spectrum" a
+// colour per pixel from a hue field) and an optional height field drawn faintly into the bump canvas.
 
 function random(seed) {
 	return () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -117,8 +117,9 @@ function build(size, layers, height, pixel, extra = {}) {
 	};
 }
 
-// OKLCH to sRGB bytes, clipped to the gamut, so every hue of a spectrum is equally light.
-function oklch(l, c, h) {
+// OKLCH to sRGB bytes, clipped to the gamut, so every hue of a spectrum is equally light. With `clip`
+// false, null for a colour outside the gamut.
+function oklch(l, c, h, clip = true) {
 	const a = c * Math.cos(h), b = c * Math.sin(h);
 	const l_ = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;
 	const m_ = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3;
@@ -128,14 +129,15 @@ function oklch(l, c, h) {
 		-1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
 		-0.0041960863 * l_ - 0.7034186147 * m_ + 1.707614701 * s_,
 	];
+	if (!clip && linear.some(v => v < -0.0005 || v > 1.0005)) return null;
 	return linear.map(v => {
 		v = Math.min(1, Math.max(0, v));
 		return Math.round((v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055) * 255);
 	});
 }
 
-// The OKLCH hue of a #rrggbb colour, or null for a grey or near-black one.
-function hueOf(hex) {
+// A #rrggbb colour in OKLab.
+function oklabOf(hex) {
 	const value = parseInt(hex.slice(1), 16);
 	const [r, g, b] = [16, 8, 0].map(shift => {
 		const v = ((value >> shift) & 255) / 255;
@@ -144,9 +146,45 @@ function hueOf(hex) {
 	const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
 	const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
 	const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-	const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
-	const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+	return [
+		0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+		1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+		0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+	];
+}
+
+// The OKLCH hue of a #rrggbb colour, or null for a grey or near-black one.
+function hueOf(hex) {
+	const [, A, B] = oklabOf(hex);
 	return Math.hypot(A, B) < 0.05 ? null : Math.atan2(B, A);
+}
+
+// Moss's light green, the tone on top of its cushions: the colour an accent stands in for on growth.
+export const MOSS_GREEN = '#6f9a34';
+
+// `color` moved the way moss green moves to become `accent`, in OKLCH: lightness shifted by the same
+// amount, chroma scaled by the same ratio and hue turned by the same angle. So moss's darker, lighter
+// and yellower greens keep their spacing round any accent, and moss green itself gives moss back. Out
+// of gamut the chroma is cut until it fits, keeping the lightness and hue.
+export function shade(color, accent) {
+	const lch = hex => {
+		const [L, A, B] = oklabOf(hex);
+		return [L, Math.hypot(A, B), Math.atan2(B, A)];
+	};
+	const [l, c, h] = lch(color), [l0, c0, h0] = lch(MOSS_GREEN), [l1, c1, h1] = lch(accent);
+	const light = Math.min(1, Math.max(0, l + l1 - l0)), hue = h + h1 - h0;
+	const fits = chroma => oklch(light, chroma, hue, false) !== null;
+	let chroma = (c * c1) / c0;
+	if (!fits(chroma)) {
+		let low = 0, high = chroma;
+		for (let i = 0; i < 20; i++) {
+			const mid = (low + high) / 2;
+			if (fits(mid)) low = mid;
+			else high = mid;
+		}
+		chroma = low;
+	}
+	return `#${oklch(light, chroma, hue).map(v => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
 // The hues (OKLCH degrees) a full spectrum passes through: mostly blue, green and violet, as in
@@ -343,7 +381,10 @@ function sparkles(size) {
 // on top, with fine shadows between the stems and a few bright yellow-green tips. Round them the rock
 // is damp and faintly green, and away from them it is speckled like stone in the body colour. The
 // height lifts the moss gently over the rock, with a fine fuzz of stems on top and a coarser grain below.
-function moss(size) {
+// `greens` are the layers for the damp stain, the cushions' deep base, their mid and light tones, the
+// bright tips and the shadows between stems.
+const MOSS_GREENS = ['#34441a', '#1b3010', '#3f6626', MOSS_GREEN, '#b2d256', '#0c1707'].map(color => ({ color }));
+function moss(size, greens = MOSS_GREENS) {
 	const n1 = valueNoise(81), n2 = valueNoise(82, 128), n3 = valueNoise(83, 128), n4 = valueNoise(84), n5 = valueNoise(85, 128);
 	const next = random(86);
 	const N = 7;
@@ -360,10 +401,7 @@ function moss(size) {
 		}
 		return best;
 	};
-	const layers = [
-		{ color: '#000000' }, { color: '#ffffff' }, { color: '#34441a' }, { color: '#1b3010' },
-		{ color: '#3f6626' }, { color: '#6f9a34' }, { color: '#b2d256' }, { color: '#0c1707' },
-	];
+	const layers = [{ color: '#000000' }, { color: '#ffffff' }, ...greens];
 	return build(size, layers, 0.6, (u, v, o) => {
 		const rock = fbm(n1, u * 3, v * 3, 4);
 		const wx = fbm(n4, u * 5, v * 5, 3) - 0.5, wy = fbm(n4, u * 5 + 31, v * 5 + 17, 3) - 0.5;
@@ -391,6 +429,12 @@ function moss(size) {
 	}, { fuzz: true });
 }
 
+// Moss in the accent's colours: each of moss's greens becomes an accent layer naming the green it
+// stands for (`shade`), drawn as that green moved to the accent.
+function growth(size) {
+	return moss(size, MOSS_GREENS.map(({ color }) => ({ color: 'accent', shade: color })));
+}
+
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
 // no texture.
 export function woodGrain(size = 256) {
@@ -416,7 +460,7 @@ export function woodGrain(size = 256) {
 	return canvasFrom(size, [field]);
 }
 
-const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss };
+const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth };
 
 export function makeSurface(name, size = 512) {
 	const generate = GENERATORS[name];
