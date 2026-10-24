@@ -384,7 +384,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   number of turns per period), dimmer where the face turns away, and a white core where it is brightest, additive
   and premultiplied. `energy_colors` picks `ENERGY_MODE` (`ENERGY_COLORS`): the second colour (`energySecond`) on
   the contours (`energy.z` below 0.75) and the numbers, on the comet's tail (`phase` cubed), across the die along
-  `GRADIENT_AXIS` in object space (`vAcross`), or a hue wheel along each loop that turns `energyHues` (3 times
+  `GRADIENT_AXIS` in object space (`vAcross`), or a hue wheel at `ENERGY.PRISM` brightness along each loop that turns `energyHues` (3 times
   `inner_speed`, rounded) times per period. The child is `blooms`, so `draw` puts it on `BLOOM_LAYER` with the die. The die is
   `shadowless` (no `castShadow`) and `flows` with `energy_flow`, so the loop keeps drawing at `DRIFT_FPS` after
   settling, never under reduced motion. Pixel themes draw neon instead.

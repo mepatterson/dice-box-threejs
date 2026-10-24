@@ -25,7 +25,7 @@ const HALF_WIDTH = 0.012
 export const ENERGY_COLORS = ['one', 'edges', 'pulses', 'gradient', 'prismatic']
 // The way across the die a gradient runs, in the die's own space.
 const GRADIENT_AXIS = [0.35, 0.87, 0.35]
-export const ENERGY = { CORE: 0.32, HALO: 0.3, BASE: 0.6, FLOW: 2.2, BACK: 0.22, CONTOUR: 0.5, WHITE: 0.9, NUMBER: 0.5, RESULT: 2.2, RATE_LOW: 26, RATE_HIGH: 44 }
+export const ENERGY = { CORE: 0.32, HALO: 0.3, BASE: 0.6, FLOW: 2.2, BACK: 0.22, CONTOUR: 0.5, WHITE: 0.9, NUMBER: 0.5, RESULT: 2.2, RATE_LOW: 26, RATE_HIGH: 44, PRISM: 1.7 }
 
 function random(seed) {
 	return () => (seed = (seed * 16807) % 2147483647) / 2147483647
@@ -173,7 +173,7 @@ export function energyLinesMaterial({ color, second = null, colors = 'one', spee
 					glow = mix( energyColor, energySecond, smoothstep( - 0.8, 0.8, vAcross ) );
 				#elif ENERGY_MODE == 4
 					float hue = fract( vEnergy.y + vEnergy.w + vAcross * 0.25 - energyTime * energyHues / ENERGY_PERIOD );
-					glow = energyHue( hue ) * max( energyColor.r, max( energyColor.g, energyColor.b ) );
+					glow = energyHue( hue ) * ENERGY_PRISM;
 				#endif
 				vec3 light = glow * bright * ( line + halo ) + vec3( ENERGY_WHITE * energyLook.y ) * line * smoothstep( 0.5, 1.6, bright ) * bright;
 				light = min( light, vec3( 1.0 ) );

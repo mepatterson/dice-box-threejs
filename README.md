@@ -103,7 +103,7 @@ burns at full strength with a halo, so a settled result reads through the lines.
 `prefers-reduced-motion`) and `energy_core` (the white-hot core). `energy_colors` adds a second colour,
 `energy_color` (left out, the accent a third of the way round the colour wheel): `"edges"` (contours and numbers in
 it), `"pulses"` (the pulses' tails flare into it), `"gradient"` (the accent blending into it across the die, turning
-with it) or `"prismatic"` (no second colour: full hues drifting round each loop, faster with `inner_speed`); left out
+with it) or `"prismatic"` (no second colour: full, bright hues drifting round each loop whatever the accent, faster with `inner_speed`); left out
 or `"one"`, the accent alone. It looks best with `bloom`. The lines
 follow the die type's polyhedron, so a `shape` moves only the numbers; the pixel style draws neon instead.
 ```
