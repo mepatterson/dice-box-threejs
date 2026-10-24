@@ -25,7 +25,7 @@ const HALF_WIDTH = 0.012
 export const ENERGY_COLORS = ['one', 'edges', 'pulses', 'gradient', 'prismatic']
 // The way across the die a gradient runs, in the die's own space.
 const GRADIENT_AXIS = [0.35, 0.87, 0.35]
-export const ENERGY = { CORE: 0.32, HALO: 0.3, BASE: 0.6, FLOW: 2.2, BACK: 0.22, CONTOUR: 0.5, WHITE: 0.9, NUMBER: 0.5, RESULT: 2.2, RATE_LOW: 26, RATE_HIGH: 44, PRISM: 1.7 }
+export const ENERGY = { CORE: 0.32, HALO: 0.3, BASE: 0.6, FLOW: 2.2, BACK: 0.22, CONTOUR: 0.5, WHITE: 0.9, NUMBER: 0.5, RESULT: 2.2, RATE_LOW: 26, RATE_HIGH: 44, PRISM: 1.7, PAIR: 1.35 }
 
 function random(seed) {
 	return () => (seed = (seed * 16807) % 2147483647) / 2147483647
@@ -150,6 +150,10 @@ export function energyLinesMaterial({ color, second = null, colors = 'one', spee
 			varying vec4 vEnergy;
 			varying float vFacing;
 			varying float vAcross;
+			// A colour at full brightness times scale, so a blend of two keeps their light.
+			vec3 energyFull( vec3 c, float scale ) {
+				return c / max( max( c.r, max( c.g, c.b ) ), 0.001 ) * scale;
+			}
 			vec3 energyHue( float h ) {
 				return clamp( abs( mod( h * 6.0 + vec3( 0.0, 4.0, 2.0 ), 6.0 ) - 3.0 ) - 1.0, 0.0, 1.0 );
 			}
@@ -162,20 +166,34 @@ export function energyLinesMaterial({ color, second = null, colors = 'one', spee
 				float rate = floor( mix( ENERGY_RATE_LOW, ENERGY_RATE_HIGH, vEnergy.w ) ) / ENERGY_PERIOD;
 				float phase = fract( vEnergy.y - energyTime * rate + vEnergy.w * 7.0 );
 				float pulse = pow( phase, 12.0 ) * smoothstep( 1.0, 0.98, phase ) * energyLook.x;
-				float level = vEnergy.z * mix( ENERGY_BACK, 1.0, smoothstep( - 0.2, 0.2, vFacing ) ) * energyLook.z;
+				float white = ENERGY_WHITE * energyLook.y;
+				#if ENERGY_MODE == 1
+					// the white-hot core stays on the edges, so the contours keep the second colour
+					white *= step( 0.75, vEnergy.z );
+				#elif ENERGY_MODE == 2
+					// a longer comet all in the second colour, with no white-hot head to hide it
+					float tail = pow( phase, 4.0 ) * smoothstep( 1.0, 0.98, phase ) * energyLook.x;
+					pulse = max( pulse, tail * 0.7 );
+					white *= 1.0 - smoothstep( 0.02, 0.3, tail );
+				#endif
+				float strength = vEnergy.z;
+				#if ENERGY_MODE == 1
+					strength = 1.0;
+				#endif
+				float level = strength * mix( ENERGY_BACK, 1.0, smoothstep( - 0.2, 0.2, vFacing ) ) * energyLook.z;
 				float bright = level * ( ENERGY_BASE + ENERGY_FLOW * pulse );
 				vec3 glow = energyColor;
 				#if ENERGY_MODE == 1
-					glow = mix( energySecond, energyColor, step( 0.75, vEnergy.z ) );
+					glow = energyFull( mix( energySecond, energyColor, step( 0.75, vEnergy.z ) ), ENERGY_PAIR );
 				#elif ENERGY_MODE == 2
-					glow = mix( energyColor, energySecond, pow( phase, 3.0 ) * smoothstep( 1.0, 0.98, phase ) * energyLook.x );
+					glow = energyFull( mix( energyColor, energySecond, smoothstep( 0.02, 0.3, tail ) ), ENERGY_PAIR );
 				#elif ENERGY_MODE == 3
-					glow = mix( energyColor, energySecond, smoothstep( - 0.8, 0.8, vAcross ) );
+					glow = energyFull( mix( energyColor, energySecond, smoothstep( - 0.8, 0.8, vAcross ) ), ENERGY_PAIR );
 				#elif ENERGY_MODE == 4
 					float hue = fract( vEnergy.y + vEnergy.w + vAcross * 0.25 - energyTime * energyHues / ENERGY_PERIOD );
 					glow = energyHue( hue ) * ENERGY_PRISM;
 				#endif
-				vec3 light = glow * bright * ( line + halo ) + vec3( ENERGY_WHITE * energyLook.y ) * line * smoothstep( 0.5, 1.6, bright ) * bright;
+				vec3 light = glow * bright * ( line + halo ) + vec3( white ) * line * smoothstep( 0.5, 1.6, bright ) * bright;
 				light = min( light, vec3( 1.0 ) );
 				float alpha = max( light.r, max( light.g, light.b ) );
 				gl_FragColor = vec4( light / max( alpha, 0.0001 ), alpha );
