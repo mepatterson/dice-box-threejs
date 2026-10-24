@@ -23,8 +23,8 @@ const BLOT = 'splotch'
 const KIND_NAMES = [...PARTICLE_KINDS, BLOT]
 // The share of the pool splotches may take, their sizes (times a die's radius) and the fps the box redraws at while
 // only splotches are left.
-export const BLOT_SHARE = 0.3
-const BLOT_SIZES = [0.7, 1, 1.4]
+export const BLOT_SHARE = 0.05
+const BLOT_SIZES = [0.6, 0.8, 1]
 export const BLOT_FPS = 6
 // Per kind, in die radii and seconds: sprite shape, size, life, launch speed, upward pull (negative falls), drag,
 // growth over its life, spin, twinkle, positional jitter per frame, and the colours it takes without a theme's.
@@ -39,13 +39,13 @@ const KINDS = {
 	splash: { shape: 'dot', size: [0.09, 0.16], life: [0.35, 0.65], speed: [1.6, 3.4], up: -7, drag: 0.5, bounce: 0.2, colors: ['#4FA8E0', '#9AD2F2', '#FFFFFF'] },
 	crackle: { shape: 'star', size: [0.14, 0.26], life: [0.1, 0.3], speed: [0.5, 2], up: 0, drag: 4, jitter: 0.12, twinkle: 1, colors: ['#9FD8FF', '#FFFFFF', '#6FB8FF'] },
 	glints: { shape: 'star', size: [0.18, 0.32], life: [0.25, 0.5], speed: [0.2, 0.9], up: 0, drag: 3, twinkle: 0.8, colors: ['#FFFFFF', '#FFF2D6'] },
-	splotch: { shape: 'blot', size: [0.5, 0.6], life: [4, 6], speed: [0, 0], up: 0, drag: 10, grow: 0.12, alpha: 0.8, hold: 0.4, colors: ['#4FA8E0'] },
+	splotch: { shape: 'blot', size: [0.5, 0.6], life: [2.5, 3.5], speed: [0, 0], up: 0, drag: 10, grow: 0.12, alpha: 0.6, hold: 0.35, colors: ['#4FA8E0'] },
 }
 // Trails: dice faster than `min` radii per second shed up to `rate` particles a second, at full rate from `full`.
 const TRAIL = { min: 8, full: 30, rate: 45 }
 // Bursts: an impact of speed s (0 to 1) throws `least + most * s` particles; slower than `quiet` throws none.
 const BURST = { least: 3, most: 18, quiet: 0.06 }
-const BLOT_QUIET = 0.15
+const BLOT_QUIET = 0.35
 const RING = 18
 const CRIT = 70
 const FIZZLE = 14
@@ -278,7 +278,7 @@ export class DiceParticles {
 			const z = Math.max(0.1 * unit, p.z - v.z / s * unit * back)
 			const spread = between(spec.speed) * unit * 0.5
 			const a = Math.random() * Math.PI * 2
-			if (kind == 'splash' && Math.random() < 0.12) this.splotch(look.colors[kind], unit, x, y, 0.2, { alpha: 0.7 })
+			if (kind == 'splash' && Math.random() < 0.03) this.splotch(look.colors[kind], unit, x, y, 0.2, { alpha: 0.7 })
 			if (this.spawn(kind, look.colors[kind], unit, x, y, z, v.x * 0.06 + Math.cos(a) * spread, v.y * 0.06 + Math.sin(a) * spread, Math.random() * spread * 0.5, { life: 0.8, size: 0.8 }) === null) return
 		}
 	}
@@ -290,7 +290,7 @@ export class DiceParticles {
 		const n = Math.round((BURST.least + BURST.most * speed) * look.amount)
 		this.burst(look.impacts, look.colors[look.impacts], unit, point, n, { speed: 0.6 + 0.8 * speed, centre })
 		if (look.impacts == 'splash' && speed > BLOT_QUIET) {
-			const blots = Math.max(1, Math.round((1 + 2 * speed) * look.amount))
+			const blots = speed > 0.7 && look.amount >= 1 ? 2 : 1
 			for (let j = 0; j < blots; j++) {
 				const a = Math.random() * Math.PI * 2, d = (j ? 0.5 + Math.random() : 0) * unit
 				this.splotch(look.colors.splash, unit, point.x + Math.cos(a) * d, point.y + Math.sin(a) * d, speed)
@@ -300,7 +300,7 @@ export class DiceParticles {
 
 	settle(look, unit, x, y) {
 		this.ring(look.impacts, look.colors[look.impacts], unit, x, y, Math.round(RING * look.amount))
-		if (look.impacts == 'splash') for (let j = 0; j < 2; j++) {
+		if (look.impacts == 'splash') {
 			const a = Math.random() * Math.PI * 2
 			this.splotch(look.colors.splash, unit, x + Math.cos(a) * unit * 1.1, y + Math.sin(a) * unit * 1.1, 0.4)
 		}
