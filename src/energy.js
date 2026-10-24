@@ -9,7 +9,10 @@ import { DICE_GEOM } from "./const/dice"
 // back of the die reads as depth, a white-hot core where it runs brightest, and, with `flow`, a comet of
 // light running round each loop. The numbers are drawn on the die's own faces as glowing strokes
 // (DiceFactory), dim until a face is the result. One shared clock drives every energy die, kept to a span
-// every loop's pulses repeat over, so it stays small for mediump phones.
+// every loop's pulses repeat over, so it stays small for mediump phones. With `colors` the lines take a second
+// colour too (ENERGY_COLORS): contours and numbers in it ("edges"), pulses flaring into it ("pulses"), a blend
+// across the die from the glow colour to it that tumbles with the die ("gradient"), or neither: hues drifting
+// round each loop ("prismatic", at `speed`).
 
 export const ENERGY_GLOW = '#FF8A2B'
 // The flow clock repeats over this many seconds; each loop's pulse goes round a whole number of times in it.
@@ -19,6 +22,9 @@ export const ENERGY_PERIOD = 60
 const EDGE_INSETS = [0.016, 0.034, 0.052]
 const CONTOUR_INSETS = [0.088, 0.108]
 const HALF_WIDTH = 0.012
+export const ENERGY_COLORS = ['one', 'edges', 'pulses', 'gradient', 'prismatic']
+// The way across the die a gradient runs, in the die's own space.
+const GRADIENT_AXIS = [0.35, 0.87, 0.35]
 export const ENERGY = { CORE: 0.32, HALO: 0.3, BASE: 0.6, FLOW: 2.2, BACK: 0.22, CONTOUR: 0.5, WHITE: 0.9, NUMBER: 0.5, RESULT: 2.2, RATE_LOW: 26, RATE_HIGH: 44 }
 
 function random(seed) {
@@ -105,27 +111,48 @@ export function energyLines(shape, radius, { faces = true } = {}) {
 
 const consts = () => Object.entries({ ...ENERGY, PERIOD: ENERGY_PERIOD }).map(([k, v]) => `#define ENERGY_${k} ${Number(v).toFixed(3)}`).join('\n')
 
-// The ribbons' material. look: { color, time (the shared clock), flow, core, dim }. Premultiplied and additive,
-// never brighter than its alpha (WebKit blots a canvas pixel that is).
-export function energyLinesMaterial({ color, time, flow = true, core = true, dim = false }) {
+// The second colour a look's `colors` uses when it names none: the glow colour a third of the way round the wheel.
+export function energySecond(color, second) {
+	return second ? new THREE.Color(second) : new THREE.Color(color).offsetHSL(1 / 3, 0, 0)
+}
+
+// The ribbons' material. look: { color, second, colors (ENERGY_COLORS), speed, time (the shared clock), flow, core,
+// dim }. Premultiplied and additive, never brighter than its alpha (WebKit blots a canvas pixel that is).
+export function energyLinesMaterial({ color, second = null, colors = 'one', speed = 1, time, flow = true, core = true, dim = false }) {
+	const mode = Math.max(0, ENERGY_COLORS.indexOf(colors))
 	return new THREE.ShaderMaterial({
-		uniforms: { energyColor: { value: new THREE.Color(color) }, energyTime: time, energyLook: { value: new THREE.Vector3(flow ? 1 : 0, core ? 1 : 0, dim ? 0.3 : 1) } },
+		uniforms: {
+			energyColor: { value: new THREE.Color(color) },
+			energySecond: { value: energySecond(color, second) },
+			energyTime: time,
+			energyLook: { value: new THREE.Vector3(flow ? 1 : 0, core ? 1 : 0, dim ? 0.3 : 1) },
+			energyHues: { value: Math.max(1, Math.round(3 * speed)) },
+		},
+		defines: { ENERGY_MODE: mode },
 		vertexShader: `
 			attribute vec4 energy;
 			varying vec4 vEnergy;
 			varying float vFacing;
+			varying float vAcross;
 			void main() {
 				vEnergy = energy;
+				vAcross = dot( normalize( position ), normalize( vec3( ${GRADIENT_AXIS.map(v => v.toFixed(3)).join(', ')} ) ) );
 				vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
 				vFacing = dot( normalize( normalMatrix * normal ), normalize( - mvPosition.xyz ) );
 				gl_Position = projectionMatrix * mvPosition;
 			}`,
 		fragmentShader: `${consts()}
 			uniform vec3 energyColor;
+			uniform vec3 energySecond;
 			uniform float energyTime;
 			uniform vec3 energyLook;
+			uniform float energyHues;
 			varying vec4 vEnergy;
 			varying float vFacing;
+			varying float vAcross;
+			vec3 energyHue( float h ) {
+				return clamp( abs( mod( h * 6.0 + vec3( 0.0, 4.0, 2.0 ), 6.0 ) - 3.0 ) - 1.0, 0.0, 1.0 );
+			}
 			void main() {
 				float d = abs( vEnergy.x );
 				float px = max( fwidth( vEnergy.x ), 0.0001 );
@@ -137,7 +164,18 @@ export function energyLinesMaterial({ color, time, flow = true, core = true, dim
 				float pulse = pow( phase, 12.0 ) * smoothstep( 1.0, 0.98, phase ) * energyLook.x;
 				float level = vEnergy.z * mix( ENERGY_BACK, 1.0, smoothstep( - 0.2, 0.2, vFacing ) ) * energyLook.z;
 				float bright = level * ( ENERGY_BASE + ENERGY_FLOW * pulse );
-				vec3 light = energyColor * bright * ( line + halo ) + vec3( ENERGY_WHITE * energyLook.y ) * line * smoothstep( 0.5, 1.6, bright ) * bright;
+				vec3 glow = energyColor;
+				#if ENERGY_MODE == 1
+					glow = mix( energySecond, energyColor, step( 0.75, vEnergy.z ) );
+				#elif ENERGY_MODE == 2
+					glow = mix( energyColor, energySecond, pow( phase, 3.0 ) * smoothstep( 1.0, 0.98, phase ) * energyLook.x );
+				#elif ENERGY_MODE == 3
+					glow = mix( energyColor, energySecond, smoothstep( - 0.8, 0.8, vAcross ) );
+				#elif ENERGY_MODE == 4
+					float hue = fract( vEnergy.y + vEnergy.w + vAcross * 0.25 - energyTime * energyHues / ENERGY_PERIOD );
+					glow = energyHue( hue ) * max( energyColor.r, max( energyColor.g, energyColor.b ) );
+				#endif
+				vec3 light = glow * bright * ( line + halo ) + vec3( ENERGY_WHITE * energyLook.y ) * line * smoothstep( 0.5, 1.6, bright ) * bright;
 				light = min( light, vec3( 1.0 ) );
 				float alpha = max( light.r, max( light.g, light.b ) );
 				gl_FragColor = vec4( light / max( alpha, 0.0001 ), alpha );

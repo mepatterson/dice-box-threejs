@@ -11,7 +11,7 @@ import {GRAINS, COATS, makeRelief} from "./normals.js"
 import {INNER_STYLES, INNER_BUDGETS, LIGHTNING_GLOW, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
 import {LAVA_GLOW, STORM_GLOW, lavaTextures, lavaShader} from "./lava.js"
 import {bloomShader} from "./bloom.js"
-import {ENERGY, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader} from "./energy.js"
+import {ENERGY, ENERGY_COLORS, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader, energySecond} from "./energy.js"
 import {radialDot} from "./helpers.js"
 import {LIQUID_STYLES, LIQUIDS, LIQUID_LEVEL, LIQUID_SCALE, BUBBLE_BUDGETS, levelOf, sloshState, liquidMaterial, bubbleCloud, bubbleMaterial, applySlosh} from "./liquid.js"
 import {particleLook} from "./particles.js"
@@ -1584,7 +1584,9 @@ class DiceFactory {
 		if (cached) return cached;
 		const { composite } = this.createTextMaterial(diceobj, labels, index, size, margin, ENERGY_LABEL, ENERGY_INK, 'none', '#000000', allowcache);
 		const mat = new THREE.MeshBasicMaterial({ map: composite, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, premultipliedAlpha: true });
-		const color = new THREE.Color(this.dice_accent || ENERGY_GLOW);
+		const glow = this.dice_accent || ENERGY_GLOW;
+		// with contours in the second colour the numbers, drawn inside them, take it too
+		const color = this.energy_look.colors == 'edges' ? energySecond(glow, this.energy_look.second) : new THREE.Color(glow);
 		mat.energyGlow = { value: new THREE.Vector4(color.r, color.g, color.b, ENERGY.NUMBER) };
 		mat.defines = { DICE_ENERGY: '', ...(this.energy_look.core && { ENERGY_HOT: '' }) };
 		mat.onBeforeCompile = function (shader) {
@@ -1612,7 +1614,7 @@ class DiceFactory {
 	}
 
 	energyLinesMaterial(dim, theme = this.theme) {
-		const look = theme && theme.energy ? theme.energy : { color: this.dice_accent || ENERGY_GLOW, ...this.energy_look };
+		const look = theme && theme.energy ? theme.energy : { color: this.dice_accent || ENERGY_GLOW, speed: this.inner_speed, ...this.energy_look };
 		if (theme && !theme.energy) theme.energy = look;
 		const key = `energy|lines|${dim}`;
 		const cache = theme ? theme.materials : this.mesh_materials_cache;
@@ -2431,7 +2433,7 @@ class DiceFactory {
 		this.pixel = pixelOf(colordata);
 		// the pixel style has no lines to draw energy with; it draws neon's tubes instead
 		if (this.pixel && this.dice_material == 'energy') this.dice_material = 'neon';
-		this.energy_look = { faces: switchOf(colordata.energy_faces), flow: switchOf(colordata.energy_flow), core: switchOf(colordata.energy_core) };
+		this.energy_look = { faces: switchOf(colordata.energy_faces), flow: switchOf(colordata.energy_flow), core: switchOf(colordata.energy_core), colors: ENERGY_COLORS.includes(colordata.energy_colors) ? colordata.energy_colors : 'one', second: colordata.energy_color || null };
 		this.dice_grain = GRAINS.includes(colordata.grain) ? colordata.grain : null;
 		this.dice_coat = COATS.includes(colordata.coat) ? colordata.coat : null;
 		this.coat_strength = amountOf(colordata.coat_strength, 1);
