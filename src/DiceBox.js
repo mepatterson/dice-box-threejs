@@ -149,8 +149,9 @@ const NUDGE_SLIDE = 0.45
 // A liquid's slosh (liquid.js): its surface tilts towards the die's sideways acceleration (as a share of gravity, at
 // most SLOSH.most) on a spring of SLOSH.hz with SLOSH.damping of critical, a little more for the die's spin (the walls
 // drag the liquid round); a jolt harder than SLOSH.jolt times gravity starts a ripple that fades at SLOSH.fade per
-// second. A tilt never passes SLOSH.tilt radians.
-const SLOSH = { hz: 1.8, damping: 0.14, most: 0.8, spin: 0.01, tilt: 0.9, jolt: 4, ripple: 0.12, fade: 2.8, rate: 15 }
+// second. When a throw's recording ends, the surface gets a kick of SLOSH.bob and a ripple of SLOSH.bobRipple, a small
+// bob that dies away in a couple of seconds. A tilt never passes SLOSH.tilt radians.
+const SLOSH = { hz: 1.8, damping: 0.14, most: 0.8, spin: 0.01, tilt: 0.9, jolt: 4, ripple: 0.12, fade: 2.8, rate: 15, bob: 1.3, bobRipple: 0.04 }
 
 // Fur shells by device: at most `most` per die, `budget` across every fuzzy die on the table, never
 // fewer than `least`. Longer fur (a colorset's growth above 1) multiplies a die's shells by up to
@@ -1935,7 +1936,12 @@ class DiceBox {
 		if (track) {
 			const f = k - track.start
 			const last = track.frames.length - 1
-			if (f >= last) mesh.track = null
+			if (f >= last) {
+				mesh.track = null
+				s.vx += liquid.slosh * SLOSH.bob * s.dx
+				s.vy += liquid.slosh * SLOSH.bob * s.dy
+				s.amp = Math.max(s.amp, liquid.slosh * SLOSH.bobRipple * liquid.radius)
+			}
 			else if (f >= 1) {
 				const a = track.frames[f - 1], b = track.frames[f], c = track.frames[f + 1], o = track.j * 7
 				const ax = (c[o] - 2 * b[o] + a[o]) / (dt * dt)

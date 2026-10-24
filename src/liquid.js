@@ -91,11 +91,27 @@ const FRAGMENT = `
 	${SURFACE}
 	void main() {
 		float below = liquidBelow( vLiquidWorld - vLiquidCentre );
-		if ( below < 0.0 ) discard;
+		float line = max( liquidBand * 0.2, fwidth( below ) * 1.2 );
 		if ( liquidBloomOnly > 0.5 ) {
+			if ( below < 0.0 ) discard;
 			gl_FragColor = vec4( liquidColor * liquidLook.z * 2.0, 1.0 );
 			return;
 		}
+		float fill = 1.0 - smoothstep( 0.0, line, abs( below ) );
+		vec3 pale = mix( liquidColor, vec3( 1.0 ), 0.85 );
+		#ifdef LIQUID_TOP
+			if ( below < 0.0 ) {
+				// the empty glass above the surface: a pale veil, clearer than the filled part
+				vec3 air = mix( liquidColor, vec3( 1.0 ), 0.6 );
+				float veil = 0.22 * ( 1.0 - fill );
+				gl_FragColor = vec4( mix( air * veil, pale, fill ), max( veil, fill ) );
+				#include <colorspace_fragment>
+				#include <premultiplied_alpha_fragment>
+				return;
+			}
+		#else
+			if ( below < - line ) discard;
+		#endif
 		vec3 view = normalize( cameraPosition - vLiquidWorld );
 		float rim = 1.0 - smoothstep( 0.0, max( liquidBand, fwidth( below ) * 1.5 ), below );
 		vec3 color;
@@ -110,8 +126,10 @@ const FRAGMENT = `
 			color = liquidColor * mix( 0.85, 0.5, liquidLook.y * ( 1.0 - facing ) );
 			alpha = liquidLook.x + ( 1.0 - liquidLook.x ) * liquidLook.y * 0.6 * ( 1.0 - facing );
 		#endif
-		color = mix( color, mix( liquidColor, vec3( 1.0 ), 0.45 ), rim * 0.7 );
-		alpha = mix( alpha, 1.0, rim * 0.5 );
+		color = mix( color, mix( liquidColor, vec3( 1.0 ), 0.5 ), rim * 0.8 );
+		alpha = mix( alpha, 1.0, rim * 0.6 );
+		color = mix( color, pale, fill );
+		alpha = mix( alpha, 1.0, fill );
 		color += liquidColor * liquidLook.z * 0.6;
 		gl_FragColor = vec4( min( color, vec3( 1.0 ) ), clamp( alpha, 0.0, 1.0 ) );
 		#include <colorspace_fragment>
