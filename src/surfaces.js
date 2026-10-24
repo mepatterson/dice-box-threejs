@@ -73,18 +73,21 @@ function tint(color) {
 // layer with `hue` also keeps its alpha and a hue field (0 to 1, wrapping), so it can be coloured per
 // pixel by `spectrumLayer`. With `glint` the pixel also sets how much it glints and the direction its
 // fleck is tilted (0 to 1), kept as a glint canvas: red 1, green the tilt, blue 1 minus the glint, so
-// red minus blue is the glint over the bump canvas's white and under its black numbers.
+// red minus blue is the glint over the bump canvas's white and under its black numbers. With `fuzz`
+// it also sets how long a fuzz of strands grows there (0 to 1), kept as a grey fuzz canvas.
 function build(size, layers, height, pixel, extra = {}) {
 	const masks = layers.map(() => new Float32Array(size * size));
 	const hues = layers.map(layer => (layer.hue ? new Uint8ClampedArray(size * size) : null));
 	const heights = height ? new Float32Array(size * size) : null;
 	const glints = extra.glint ? [new Float32Array(size * size), new Float32Array(size * size), new Float32Array(size * size)] : null;
-	const out = { masks: new Float32Array(layers.length), hues: new Float32Array(layers.length), height: 1, glint: 0, tilt: 0 };
+	const fuzz = extra.fuzz ? new Float32Array(size * size) : null;
+	const out = { masks: new Float32Array(layers.length), hues: new Float32Array(layers.length), height: 1, glint: 0, tilt: 0, fuzz: 0 };
 	for (let y = 0; y < size; y++) {
 		for (let x = 0; x < size; x++) {
 			out.masks.fill(0);
 			out.height = 1;
 			out.glint = 0;
+			out.fuzz = 0;
 			pixel(x / size, y / size, out);
 			const i = y * size + x;
 			for (let k = 0; k < layers.length; k++) {
@@ -92,6 +95,7 @@ function build(size, layers, height, pixel, extra = {}) {
 				if (hues[k]) hues[k][i] = (out.hues[k] - Math.floor(out.hues[k])) * 255;
 			}
 			if (heights) heights[i] = out.height;
+			if (fuzz) fuzz[i] = out.fuzz;
 			if (glints) {
 				glints[0][i] = out.tilt;
 				glints[1][i] = 1 - out.glint;
@@ -102,6 +106,7 @@ function build(size, layers, height, pixel, extra = {}) {
 	return {
 		...extra,
 		glint: glints ? canvasFrom(size, [1, glints[0], glints[1], glints[2]]) : null,
+		fuzz: fuzz ? canvasFrom(size, [fuzz]) : null,
 		layers: layers.map((layer, k) => ({
 			...layer,
 			mask: canvasFrom(size, [...tint(layer.color == 'spectrum' ? 'accent' : layer.color), masks[k]]),
@@ -382,7 +387,8 @@ function moss(size) {
 		o.masks[7] = cover * 0.45 * smoothstep(0.7, 0.9, 1 - stem) * (1 - 0.6 * thick);
 		const rise = smoothstep(-0.04, 0.35, t);
 		o.height = 0.45 + 0.12 * rock + 0.1 * coarse - 0.06 * fine + 0.26 * rise + cover * (0.08 * tuft + 0.14 * (fibre - 0.5) + 0.1 * (stem - 0.5)) - 0.12 * o.masks[7];
-	});
+		o.fuzz = cover * (0.45 + 0.55 * smoothstep(0, 0.3, t)) * (0.75 + 0.25 * tuft);
+	}, { fuzz: true });
 }
 
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have

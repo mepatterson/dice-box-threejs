@@ -51,6 +51,7 @@ const defaultConfig = {
 	spread: 1, // 0 to 1: how much the dice of one side throw differ in where they come in, speed and heading
 	arc: 0, // 0 to 1: how high dice hop as they are thrown; 0 low along the table, 1 a hop of about two radii
 	shape: null, // { edges, dish }: sharp to worn edges and concave faces; a colorset's own shape wins. See Shapes
+	fuzz: "auto", // fur shells on fuzzy textures (moss): "auto" by device, a number of shells per die, or false. See Fuzz
 	preloadDice: null, // e.g. ["d20", "d6"] to build textures and compile shaders in initialize()
 	themeCache: 8, // themes (colorsets) kept ready beyond those on the table; see Several players on one table
 	onRollComplete: () => {},
@@ -115,8 +116,8 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
 - `moss`: moss on rock. Soft cushions of moss in deep, mid and bright yellow-green, thicker in the
   hollows of a mottled rock in the body colour and thinner on its high spots, with fuzzy edges, damp
   green-stained rock round them and fine shadows between the stems. A matte finish with a faint sheen,
-  and a bump that raises the moss over the rock and gives it a fine fuzz. Grey, slate and brown bodies
-  make good rock; light numbers read best.
+  and a bump that raises the moss over the rock. Its fuzz grows real strands that stand off the die's
+  edges (see Fuzz). Grey, slate and brown bodies make good rock; light numbers read best.
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }
@@ -367,6 +368,28 @@ most recent), 4 to 130 KB of vertices and indices per die type; a shaped die dra
 plus one for its edges, against one per triangle for a classic die. The highlight, kept and dropped
 marks, glass and metal all work on every shape. `node bench/run.mjs --shapes` draws contact sheets of
 every die type in each shape.
+
+### Fuzz
+A texture with a `fuzz` entry (moss has one) grows short strands that stand off the die's silhouette,
+since a bump map can only shade inside it. The die is drawn a few more times as fur shells, each pushed a
+little further out, keeping only the pixels inside a strand; the strands thin and lighten towards their
+tips. They grow where the surface's fuzz field says (moss: thick where its cushions are thick, none on bare
+rock) and never over the numbers, and run on unbroken over edges and corners. The shells are a child of
+each die, so they follow it and its pop and never touch the physics; the highlight and the dropped look
+carry over to them.
+
+`fuzz: "auto"` picks how many shells by device and shares a budget across the fuzzy dice on the table:
+up to 16 per die on a desktop (160 in all), 12 on a tablet (96), 8 on a phone (60), never fewer than 6, 5
+and 5. A number caps the shells per die; `false` leaves the fuzz to the bump map. `updateConfig({ fuzz })`
+changes it for the dice that follow. A texture's own entry tunes the strands:
+```
+fuzz: { shells: 16, length: 0.12, density: 36, thickness: 0.55, lean: 0.3, taper: 0.7, fade: 0.7, root: 1, color: '#4a7326', tint: 0.5, tip: '#d4e48a', tipMix: 0.4 }
+```
+`length` is in die radii, `density` strands per radius, `thickness` a strand's width at its root (in strand
+spacings), `lean` how far tips sway sideways, `taper` how much a strand narrows, `fade` how soft its tip is,
+`root` how dark its root, `tint` how far strands lean from the label's colour to `color`, `tipMix` how far
+the tips lighten to `tip`. Shells cost one more draw call per face (their runs of groups are merged) and
+the fragments of each shell; glass never grows fuzz.
 
 ## Getting Results
 ### There are three ways to get results

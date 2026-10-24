@@ -5,6 +5,7 @@ import {DICE_GEOM} from "./const/dice"
 import {woodGrain, makeSurface, spectrumLayer} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
+import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -15,7 +16,9 @@ const defaultConfig = {
 	baseScale: 100,
 	bumpMapping: true,
 	textureScale: 0.5,
-	glass_opacity: 0.35
+	glass_opacity: 0.35,
+	// the most fur shells a die with a fuzzy texture draws (the box sets it by device); 0 draws none
+	fuzzShells: MAX_SHELLS
 }
 
 // Glass writes premultiplied colour so its reflections are added on top of what shows through the
@@ -295,6 +298,11 @@ class DiceFactory {
 		this.themes = new Map();
 		this.theme = null;
 		this.themeCache = 8;
+		this.fuzz_state = { value: MAX_SHELLS };
+		this.strand_field = null;
+		this.shell_matrix = null;
+		this.shell_sets = new WeakMap();
+		this.no_fuzz = new THREE.MeshBasicMaterial({ visible: false });
 
 		this.material_options = {
 			specular: 0x777777,
@@ -327,6 +335,9 @@ class DiceFactory {
 		this.themes.forEach(theme => this.disposeTheme(theme));
 		this.halo_cache.forEach(mat => mat.dispose());
 		if (this.halo_texture) this.halo_texture.dispose();
+		if (this.strand_field) this.strand_field.dispose();
+		this.strand_field = null;
+		this.shell_sets = new WeakMap();
 		this.geometries = {};
 		this.themes = new Map();
 		this.theme = null;
@@ -388,6 +399,7 @@ class DiceFactory {
 		Object.values(theme.textures).forEach(entry => {
 			entry.composite && entry.composite.dispose();
 			entry.bump && entry.bump.dispose();
+			entry.fuzz && entry.fuzz.dispose();
 		});
 		theme.materials.forEach(mat => {
 			if (mat.bumpMap && mat.bumpMap.isNormalImage) mat.bumpMap.dispose();
@@ -528,7 +540,7 @@ class DiceFactory {
 			materials[top] = this.strikeMaterial(mesh.baseMaterial[top], null);
 		}
 		mesh.material = materials;
-		const interior = mesh.children.find(child => child.isMesh);
+		const interior = mesh.interior;
 		if (interior) {
 			interior.baseMaterial = interior.material;
 			interior.material = this.dimMaterial(interior.material);
@@ -540,8 +552,8 @@ class DiceFactory {
 			mesh.remove(mesh.halo);
 			mesh.halo = null;
 		}
-		const interior = mesh.children.find(child => child.isMesh && child.baseMaterial);
-		if (interior) {
+		const interior = mesh.interior;
+		if (interior && interior.baseMaterial) {
 			interior.material = interior.baseMaterial;
 			interior.baseMaterial = null;
 		}
@@ -642,6 +654,7 @@ class DiceFactory {
 		};
 		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|dim`;
 		if (mat.isGlass) mat.defines.DICE_DIM = '';
+		mat.fuzzDim = true;
 		variants.set(key, mat);
 		return mat;
 	}
@@ -658,12 +671,13 @@ class DiceFactory {
 		mat = this.cloneMaterial(dim);
 		mat.onBeforeCompile = dim.onBeforeCompile;
 		mat.customProgramCacheKey = dim.customProgramCacheKey;
-		const { composite, bump } = this.drawLabel(info, info.forecolor, { text, strike: true });
+		const { composite, bump, fuzz } = this.drawLabel(info, info.forecolor, { text, strike: true });
 		mat.map = composite;
 		if (base.metalnessMap) mat.metalnessMap = bump;
 		if (base.bumpMap && !base.bumpMap.isNormalImage) mat.bumpMap = bump;
 		if (base.glintMap) mat.glintMap = bump;
-		mat.ownTextures = [composite, bump];
+		if (base.fuzzMap && fuzz) mat.fuzzMap = fuzz;
+		mat.ownTextures = [composite, bump, fuzz];
 		variants.set(key, mat);
 		return mat;
 	}
@@ -677,6 +691,9 @@ class DiceFactory {
 		mat.diceTheme = base.diceTheme;
 		mat.envBase = base.envBase;
 		mat.glintMap = base.glintMap;
+		mat.fuzzMap = base.fuzzMap;
+		mat.fuzz = base.fuzz;
+		mat.fuzzDim = base.fuzzDim;
 		return mat;
 	}
 
@@ -742,6 +759,7 @@ class DiceFactory {
 		const interior = this.dice_material == 'glass' ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
 		let dicemesh = new THREE.Mesh(geom, this.createMaterials(diceobj, this.baseScale / 2, 1.0));
 		if (interior) dicemesh.add(interior);
+		dicemesh.interior = interior;
 		dicemesh.result = [];
 		dicemesh.shape = diceobj.shape;
 		dicemesh.rerolls = 0;
@@ -810,16 +828,56 @@ class DiceFactory {
 			dicemesh.material[0].needsUpdate = true;
 		}
 
-		switch (diceobj.values.length) {
-			case 1:
-				return this.fixmaterials(dicemesh, 1);
-			case 2:
-				return this.fixmaterials(dicemesh, 2);
-			case 3: 
-				return this.fixmaterials(dicemesh, 3);
-			default:
-				return dicemesh;
+		if (diceobj.values.length <= 3) this.fixmaterials(dicemesh, diceobj.values.length);
+		return this.addFuzz(dicemesh);
+	}
+
+	// A die whose texture grows fuzz gets its fur shells (fuzz.js) as a child, so they follow its pose
+	// and pop, and never touch the physics. Created after the die, they draw right after it at the same
+	// depth. Their materials follow the die's own array, so a face swap, highlight or dimmed drop
+	// carries over to the strands; slots without a fuzz map draw nothing.
+	addFuzz(dicemesh) {
+		if (!(this.fuzzShells > 0) || !dicemesh.material.some(mat => mat.fuzzMap)) return dicemesh;
+		if (!this.shell_matrix) {
+			this.shell_matrix = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SHELLS * 16), 16);
+			for (let i = 0; i < MAX_SHELLS; i++) new THREE.Matrix4().toArray(this.shell_matrix.array, i * 16);
 		}
+		const shells = new THREE.InstancedMesh(shellGeometry(dicemesh.geometry), this.no_fuzz, MAX_SHELLS);
+		shells.instanceMatrix = this.shell_matrix;
+		Object.defineProperty(shells, 'material', { configurable: true, get: () => this.shellMaterials(dicemesh.material), set() {} });
+		const most = Math.min(MAX_SHELLS, Math.max(...dicemesh.material.map(mat => (mat.fuzz ? mat.fuzz.shells || FUZZ_DEFAULTS.shells : 0))));
+		shells.onBeforeRender = () => { shells.count = Math.min(most, this.fuzz_state.value); };
+		shells.count = most;
+		shells.frustumCulled = false;
+		shells.castShadow = false;
+		shells.raycast = () => {};
+		shells.isFuzz = true;
+		dicemesh.add(shells);
+		dicemesh.fuzz = shells;
+		return dicemesh;
+	}
+
+	shellMaterials(materials) {
+		let shells = this.shell_sets.get(materials);
+		if (!shells) {
+			shells = materials.map(mat => this.shellMaterial(mat));
+			this.shell_sets.set(materials, shells);
+		}
+		return shells;
+	}
+
+	shellMaterial(base) {
+		if (!base || !base.fuzzMap) return this.no_fuzz;
+		const key = `fuzz|${base.map && base.map.uuid}|${base.fuzzMap.uuid}|${Boolean(base.fuzzDim)}`;
+		const variants = this.ownerOf(base).variants;
+		let mat = variants.get(key);
+		if (mat) return mat;
+		if (!this.strand_field) this.strand_field = strandField();
+		const state = this.fuzz_state;
+		const most = Math.min(MAX_SHELLS, (base.fuzz && base.fuzz.shells) || FUZZ_DEFAULTS.shells);
+		mat = shellMaterial(base, { field: this.strand_field, shells: { get value() { return Math.min(most, state.value); } }, dim: Boolean(base.fuzzDim) });
+		variants.set(key, mat);
+		return mat;
 	}
 
 	// Geometry is cached per die type and shape. A shaped die shares its type's physics shape, so it
@@ -956,6 +1014,10 @@ class DiceFactory {
 						mat.bumpMap.needsUpdate = true;
 					}
 				}
+			}
+			if (canvasTextures && canvasTextures.fuzz) {
+				mat.fuzzMap = canvasTextures.fuzz;
+				mat.fuzz = this.dice_texture_rand.fuzz;
 			}
 			const surface = this.dice_texture_rand.surface && this.surfaces.get(this.dice_texture_rand.surface);
 			if (surface && surface.glint && canvasTextures.bump && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
@@ -1367,6 +1429,7 @@ class DiceFactory {
 		compositetexture.anisotropy = this.maxAnisotropy;
 		var bumpMap = null;
 		if (glow) return {composite:compositetexture};
+		const fuzzMap = texture.fuzz && this.dice_material != 'glass' && !isTexture ? this.drawFuzz(canvasBump, index, texture) : null;
 		// The bump canvas is grey (a height and the paint mask) and uploads as one channel, except
 		// where it also carries glitter flecks. Glass without flecks never samples it.
 		const glinting = texture.surface && this.surfaces.get(texture.surface)?.glint && (this.dice_material == 'none' || this.dice_material == 'glass');
@@ -1379,11 +1442,30 @@ class DiceFactory {
 		if (allowcache) {
 			// cache new texture
 			this.cache_misses++;
-			this.materials_cache[cachestring] = {composite:compositetexture,bump:bumpMap,key:cachestring};
+			this.materials_cache[cachestring] = {composite:compositetexture,bump:bumpMap,fuzz:fuzzMap,key:cachestring};
 			return this.materials_cache[cachestring];
 		}
 
-		return {composite:compositetexture,bump:bumpMap};
+		return {composite:compositetexture,bump:bumpMap,fuzz:fuzzMap};
+	}
+
+	// Where a fuzzy texture's strands grow on this label, as a grey map at half the label's size: the
+	// surface's fuzz field (or everywhere, for a texture without one) turned and shifted like its
+	// colours, times the bump canvas, whose black numbers and strike bars leave bare patches.
+	drawFuzz(canvasBump, index, texture) {
+		const size = Math.max(16, canvasBump.width / 2);
+		const canvas = document.createElement('canvas');
+		canvas.width = canvas.height = size;
+		const context = canvas.getContext('2d');
+		const surface = texture.surface && this.surfaces.get(texture.surface);
+		context.fillStyle = surface && surface.fuzz ? '#000000' : '#FFFFFF';
+		context.fillRect(0, 0, size, size);
+		if (surface && surface.fuzz) this.drawPattern(context, surface.fuzz, size, index);
+		context.globalCompositeOperation = 'multiply';
+		context.drawImage(canvasBump, 0, 0, size, size);
+		const map = new THREE.CanvasTexture(canvas);
+		map.format = THREE.RedFormat;
+		return map;
 	}
 
 	// A bold slanted bar across a number, in its colour over its outline; black on the bump canvas,

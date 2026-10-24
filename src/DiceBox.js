@@ -8,6 +8,7 @@ import { DiceColors } from './DiceColors.js';
 import { fontOf, loadFont } from './fonts.js';
 import { THEMES } from './const/themes.js';
 import { MATERIALTYPES } from './const/materialtypes.js';
+import { MAX_SHELLS } from './fuzz.js';
 // import CannonDebugger from 'cannon-es-debugger'
 
 import { debounce } from "./helpers"
@@ -54,6 +55,9 @@ const defaultConfig = {
 	// The dice's shape, { edges, dish }: edges 0 (sharp) to 1 (rounded and worn), left out for the classic
 	// bevel; dish 0 to 1 for concave faces on the dice that have them. A colorset's own shape wins. See README.
 	shape: null,
+	// Fur shells for fuzzy textures (moss): "auto" picks how many by device, a number caps the shells
+	// per die, false leaves the fuzz to the bump map. See README.
+	fuzz: "auto",
 	preloadDice: null,
 	themeCache: 8,
 	onRollComplete: () => {},
@@ -108,6 +112,23 @@ const RESETTLE_TIME = 0.1
 const NUDGE_TIME = 0.12
 const NUDGE_LIFT = 0.15
 const NUDGE_SLIDE = 0.45
+
+// Fur shells by device: at most `most` per die, `budget` across every fuzzy die on the table, never
+// fewer than `least`. A phone or a tablet is told by its coarse pointer and its screen's short side.
+const FUZZ_BUDGETS = {
+	desktop: { most: 16, budget: 160, least: 6 },
+	tablet: { most: 12, budget: 96, least: 5 },
+	phone: { most: 8, budget: 60, least: 5 },
+}
+
+function fuzzBudget(fuzz) {
+	if (fuzz === false || !(fuzz === "auto" || fuzz === true || Number(fuzz) > 0)) return { most: 0, budget: 0, least: 0 }
+	const coarse = typeof matchMedia == "function" && matchMedia("(pointer: coarse)").matches
+	const short = typeof screen == "object" ? Math.min(screen.width, screen.height) : Infinity
+	const device = FUZZ_BUDGETS[coarse ? (short < 600 ? "phone" : "tablet") : "desktop"]
+	const most = Math.min(MAX_SHELLS, Number(fuzz) > 0 ? Math.round(Number(fuzz)) : device.most)
+	return { ...device, most, least: Math.min(device.least, most) }
+}
 
 const materialOf = colordata => {
 	const material = colordata?.texture?.material || 'none'
@@ -241,6 +262,8 @@ class DiceBox {
 			themeCache: this.themeCache
 		});
 		this.DiceFactory.setBumpMapping(true);
+		this.applyFuzz();
+		this.scene.onBeforeRender = () => this.updateFuzz();
 		this.DiceFactory.setRefraction(this.glass_refraction);
 		this.DiceFactory.setGlassEdges(this.glass_edges);
 
@@ -249,6 +272,22 @@ class DiceBox {
 
 	}
 
+
+	applyFuzz() {
+		this.fuzzBudget = fuzzBudget(this.fuzz)
+		this.DiceFactory.fuzzShells = this.fuzzBudget.most
+	}
+
+	// Before every render: the fuzzy dice on the table share the shell budget.
+	updateFuzz() {
+		let fuzzy = 0
+		for (const mesh of this.diceList) if (mesh.fuzz) fuzzy++
+		if (!fuzzy) return
+		const { most, budget, least } = this.fuzzBudget
+		const shells = most > 0 ? Math.max(least, Math.min(most, Math.floor(budget / fuzzy))) : 0
+		this.DiceFactory.fuzz_state.value = shells
+		for (const mesh of this.diceList) if (mesh.fuzz) mesh.fuzz.visible = shells > 0
+	}
 
 	enableShadows(){
 		this.shadows = true;
@@ -330,8 +369,8 @@ class DiceBox {
 				if (!mesh) continue
 				mesh.castShadow = this.shadows
 				group.add(mesh)
-				for (const mat of [...mesh.material, ...mesh.children.map(child => child.material)]) {
-					for (const texture of [mat.map, mat.bumpMap, mat.metalnessMap, mat.glintMap]) if (texture) this.renderer.initTexture(texture)
+				for (const mat of [...mesh.material, ...mesh.children.flatMap(child => child.material)]) {
+					for (const texture of [mat.map, mat.bumpMap, mat.metalnessMap, mat.glintMap, mat.fuzzMap]) if (texture) this.renderer.initTexture(texture)
 				}
 			}
 			if (this.renderer.extensions.has("KHR_parallel_shader_compile")) await this.renderer.compileAsync(group, this.camera, this.scene)
@@ -678,6 +717,11 @@ class DiceBox {
 		if ("gravity_multiplier" in options) {
 			this.gravity_multiplier = options.gravity_multiplier
 			this.world.gravity.set(0, 0, -9.8 * this.gravity_multiplier)
+		}
+		if ("fuzz" in options) {
+			this.fuzz = options.fuzz
+			this.applyFuzz()
+			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
 		}
 		if ("onImpact" in options) this.onImpact = options.onImpact
 		if ("impact" in options) this.impact = { ...defaultConfig.impact, ...options.impact }

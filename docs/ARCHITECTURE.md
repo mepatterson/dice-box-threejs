@@ -17,6 +17,7 @@ die land on a value chosen in advance.
 | `src/fonts.js` | Waits for a colorset's number font and measures it against Arial. |
 | `src/shapes.js` | Shaped dice (`shape: { edges, dish }`): rounded or sharp edges and dished faces, drawn over the plain physics shape. |
 | `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles, moss) and the wood grain. |
+| `src/fuzz.js` | Fur shells for fuzzy textures: the strand field, shell geometry and shell material. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
 ## How a roll flows
@@ -185,6 +186,26 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   one more texture. Metal is skipped, since its bump canvas is the paint mask. These are cached in `surface_tints` like the accent tints, keyed by accent and tone. A texture's
   `finish` (roughness, clear coat, iridescence, sheen) is merged into the plastic preset (`materialPreset`); glass
   takes only its iridescence, and a colorset's `iridescence` (0 to 1) sets or adds it on plastic and glass.
+- **Fuzz** (`fuzz.js`, `DiceFactory.addFuzz`): a texture with a `fuzz` entry gets, per label, a fuzz map
+  (`drawFuzz`, half the label's size, one channel): the surface's fuzz field turned and shifted like its colours,
+  multiplied by the bump canvas so the numbers and strike bars are bare. Not on glass. Each die with a fuzz map
+  gets an `InstancedMesh` child of up to `MAX_SHELLS` instances (one shared identity `instanceMatrix`), on
+  `shellGeometry`: the die geometry's own buffers, its consecutive groups of one material slot merged (a classic
+  die's group per triangle becomes one per face), plus `fuzzDir`, the area-weighted normal of all triangles at
+  each position (so the shells stay closed over edges) with the die radius in w. The vertex shader pushes
+  shell `gl_InstanceID` out by `(i + 1) / shells` of the length, plus a sideways sway growing with the square
+  of the height. The fragment shader reads a tiling 3D strand field (`strandField`, 48³ RG8: distance to the
+  nearest jittered strand centre and that strand's random length) at the die's object-space position, so
+  strands turn with the die and run across faces, and the fuzz map at the label UV (with a coarse mip to keep
+  strands back from the numbers); it discards outside the strand, with a soft pixel of edge (`fwidth`) and a
+  softer tip. The shells' `material` is a getter over the die's own array (`shellMaterials`, cached per array in
+  a `WeakMap`; one Lambert shell material per label material in the theme's `variants`, keyed by its map and
+  fuzz map and whether it is dimmed), so a face swap, the glow and a dropped die's dimming carry over; slots
+  without a fuzz map get an invisible material. Shells depth-test and write depth (the dice don't), so their
+  layers and neighbouring faces sort among themselves, and they draw right after their die (higher id, same
+  depth). The shell count is one uniform (`fuzz_state`): `DiceBox.updateFuzz`, run from `scene.onBeforeRender`,
+  shares the device's budget (`FUZZ_BUDGETS`) over the fuzzy dice on the table; each shell mesh sets its
+  instance count in `onBeforeRender`. Shells cast no shadow and are never part of the physics.
 - **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. The body
   opacity is a uniform (`glassOpacity`, behind the `GLASS_OPACITY` define), so glass of every opacity
   shares programs. Each
