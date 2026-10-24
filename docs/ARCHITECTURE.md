@@ -18,6 +18,7 @@ die land on a value chosen in advance.
 | `src/shapes.js` | Shaped dice (`shape: { edges, dish }`): rounded or sharp edges and dished faces, drawn over the plain physics shape. |
 | `src/surfaces.js` | Generates the procedural textures (bone, swirl, stone, pearl, opal, obsidian, sparkles, moss) and the wood grain. |
 | `src/fuzz.js` | Fur shells for fuzzy textures: the strand field, shell geometry and shell material. |
+| `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
 ## How a roll flows
@@ -327,6 +328,29 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   the walls at 93% of the half-extent, or further in on short boxes where perspective would
   push the top of a die resting against a wall past the canvas edge. Dice spawn just inside them. During a throw a resize is held back until the dice
   settle, then the walls move and resting dice outside them slide back in.
+- **Pixel style** (`pixel.js`, a colorset's `pixel`, kept on its theme): every render goes through `draw()`.
+  Pixel dice (and their children) are put on `PIXEL_LAYER`; the lights see every layer and the table is on
+  both. Without pixel dice it is one plain render. With them, the classic dice render first as usual (their
+  shadows only, since shadow casters follow the camera's layers), then the camera sees only `PIXEL_LAYER` and
+  `PixelPass` renders it into a low-resolution sRGB target with a depth texture, at `pixelScale` (canvas
+  pixels per pixel, rounded, so a die of `baseScale` is about `size` pixels across). The projection is widened
+  so the target covers whole blocks from the canvas's bottom left corner, a fixed grid. Pixel materials write
+  depth with a depth test that always passes (`pixelate`), so they still draw back to front while the depth
+  texture marks the dice's silhouette; the table writes none. The post pass (one fragment per low pixel)
+  unpremultiplies, snaps to the merged palettes of the pixel themes on the table (`pixelPalette`, OKLab,
+  dithering between the two nearest with a 4x4 Bayer threshold), steps glass alpha, dithers empty pixels'
+  shadow alpha, and draws the outline on empty pixels beside the silhouette. Settled dice's stamps
+  (`stampResult`: the result upright in the bitmap font, the up face swapped for a variant without its
+  number, `bareMaterial`) are drawn into that image as quads one texel per pixel at the up face's projected
+  point, then the image is drawn over the canvas, `scale` x `scale` blocks with premultiplied blending.
+  `pixelShader` patches the lighting chunks: banded `dotNL`, specular and clear coat in quarter steps. Pixel
+  labels (`createPixelLabel`) are the body and texture shrunk to `labelTexels` texels (one per pixel of a die
+  face up at the theme's size), drawn back up at `PIXEL_UNIT` canvas pixels per texel, with the numbers
+  painted turned at that resolution; no bump, glint or fuzz map (unless `pixel.fuzz`). The first label's body
+  colours (`sampleColors`) feed the palette. A pixel die dims by darkening only. Choppy pixel themes (`fps`)
+  make `frame` draw at most that often while anything changes, and once more at the end. Pixel programs
+  compile against the target (`preloadTheme` sets it), since a render target's programs differ from the
+  canvas's.
 - There is no idle render loop. Frames are rendered only while a throw plays back or pops, plus a
   single render after setup, resize, clear and remove. `clearDice({fade})` fades the canvas
   with CSS, so a fade-out renders nothing.

@@ -9,6 +9,7 @@ import { fontOf, loadFont } from './fonts.js';
 import { THEMES } from './const/themes.js';
 import { MATERIALTYPES } from './const/materialtypes.js';
 import { MAX_SHELLS } from './fuzz.js';
+import { PixelPass, PIXEL_LAYER } from './pixel.js';
 // import CannonDebugger from 'cannon-es-debugger'
 
 import { debounce } from "./helpers"
@@ -224,6 +225,9 @@ class DiceBox {
 		this.themePromises = new Map()
 		this.boxResolved = null
 		this.boxTheme = null
+		this.pixelPass = null
+		this.lastDraw = 0
+		this.dirty = false
 
 		//public variables
 		// this.framerate = (1/60);
@@ -343,7 +347,7 @@ class DiceBox {
 
 		if (this.preloadDice) await this.preload(this.preloadDice)
 
-		this.renderer.render(this.scene, this.camera);
+		this.draw();
 	}
 
 	// Builds the textures and materials for these die types and compiles their shaders ahead of
@@ -373,8 +377,17 @@ class DiceBox {
 					for (const texture of [mat.map, mat.bumpMap, mat.metalnessMap, mat.glintMap, mat.fuzzMap]) if (texture) this.renderer.initTexture(texture)
 				}
 			}
-			if (this.renderer.extensions.has("KHR_parallel_shader_compile")) await this.renderer.compileAsync(group, this.camera, this.scene)
-			else this.renderer.compile(group, this.camera, this.scene)
+			// pixel dice draw into the pixel pass's target, whose programs differ from the canvas's
+			const previous = this.renderer.getRenderTarget()
+			if (theme.pixel) this.renderer.setRenderTarget(this.pixels().target)
+			let compiling
+			try {
+				if (this.renderer.extensions.has("KHR_parallel_shader_compile")) compiling = this.renderer.compileAsync(group, this.camera, this.scene)
+				else this.renderer.compile(group, this.camera, this.scene)
+			} finally {
+				this.renderer.setRenderTarget(previous)
+			}
+			await compiling
 		} finally {
 			theme.pins--
 		}
@@ -521,7 +534,7 @@ class DiceBox {
 		if (!this.envReady) return Promise.resolve()
 		this.envReady = this.envReady.then(() => this.makeEnvironment(environment)).then(target => {
 			this.useEnvironment(target)
-			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+			if (this.renderer && !this.rolling) this.draw()
 		})
 		return this.envReady
 	}
@@ -721,19 +734,19 @@ class DiceBox {
 		if ("fuzz" in options) {
 			this.fuzz = options.fuzz
 			this.applyFuzz()
-			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+			if (this.renderer && !this.rolling) this.draw()
 		}
 		if ("onImpact" in options) this.onImpact = options.onImpact
 		if ("impact" in options) this.impact = { ...defaultConfig.impact, ...options.impact }
 		if ("glass_refraction" in options) {
 			this.glass_refraction = options.glass_refraction
 			this.DiceFactory.setRefraction(options.glass_refraction)
-			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+			if (this.renderer && !this.rolling) this.draw()
 		}
 		if ("glass_edges" in options) {
 			this.glass_edges = options.glass_edges
 			this.DiceFactory.setGlassEdges(options.glass_edges)
-			if (this.renderer && !this.rolling) this.renderer.render(this.scene, this.camera)
+			if (this.renderer && !this.rolling) this.draw()
 		}
 		if ("environment" in options) await this.setEnvironment(options.environment)
 		if(options.theme_colorset || options.theme_texture || options.theme_material || options.theme_customColorset){
@@ -800,10 +813,15 @@ class DiceBox {
 
 			this.light_amb = new THREE.HemisphereLight( 0xffffbb, 0x676771, this.light_intensity * HEMI_INTENSITY );
 			this.scene.add(this.light_amb);
+			// the lights and the table are in both passes; pixel dice only in the pixel pass
+			this.light.layers.enableAll();
+			this.light_amb.layers.enableAll();
 
 			let shadowplane = new THREE.ShadowMaterial();
 			shadowplane.opacity = SHADOW_OPACITY;
+			shadowplane.depthWrite = false;
 			this.desk = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 1), shadowplane);
+			this.desk.layers.enable(PIXEL_LAYER);
 			this.scene.add(this.desk);
 		}
 		this.light.position.set(-maxwidth / 2, maxwidth / 2, maxwidth * 3);
@@ -816,7 +834,7 @@ class DiceBox {
 		this.desk.scale.set(this.display.containerWidth * 6, this.display.containerHeight * 6, 1);
 		this.desk.receiveShadow = this.shadows;
 
-		this.renderer.render(this.scene, this.camera);
+		this.draw();
 	}
 
 	resizeWorld(){
@@ -1459,6 +1477,65 @@ class DiceBox {
 		this.requestFrame()
 	}
 
+	// Renders the table. Dice of pixel themes (a colorset's `pixel`) render on PIXEL_LAYER through the pixel
+	// pass, over the rest, which render as they always have; without any, it is one plain render.
+	draw() {
+		this.dirty = false
+		let classic = false
+		const themes = []
+		const stamped = []
+		for (const mesh of this.diceList) {
+			if (!mesh.parent) continue
+			const pixel = mesh.diceTheme && mesh.diceTheme.pixel
+			const mask = pixel ? 1 << PIXEL_LAYER : 1
+			if (mesh.layers.mask !== mask || (mesh.halo && mesh.halo.layers.mask !== mask)) mesh.traverse(object => { object.layers.mask = mask })
+			if (!pixel) classic = true
+			else if (!themes.includes(mesh.diceTheme)) themes.push(mesh.diceTheme)
+			if (pixel && mesh.stamp) stamped.push(mesh)
+		}
+		if (!themes.length) {
+			this.renderer.render(this.scene, this.camera)
+			return
+		}
+		const pass = this.pixels()
+		const { size, dither, outline } = themes[0].pixel
+		pass.setLook({ palettes: themes.map(theme => this.DiceFactory.pixelPalette(theme)), dither, outline, shadowAlpha: this.desk ? this.desk.material.opacity : SHADOW_OPACITY })
+		if (classic) this.renderer.render(this.scene, this.camera)
+		else {
+			this.renderer.setRenderTarget(null)
+			this.renderer.clear()
+		}
+		this.camera.layers.set(PIXEL_LAYER)
+		try {
+			pass.render(this.renderer, this.scene, this.camera, this.pixelScale(size), stamped)
+		} finally {
+			this.camera.layers.set(0)
+		}
+	}
+
+	pixels() {
+		if (!this.pixelPass) this.pixelPass = new PixelPass()
+		return this.pixelPass
+	}
+
+	// Canvas pixels per pixel-art pixel, so a die of baseScale is about `size` pixels across: the canvas's
+	// pixels per world unit on the table, from the camera.
+	pixelScale(size) {
+		const height = this.renderer.getDrawingBufferSize(new THREE.Vector2()).y
+		const visible = 2 * this.camera.position.z * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))
+		return Math.max(2, Math.round(height / visible * 2 * this.baseScale / size))
+	}
+
+	// The lowest fps of the pixel themes on the table that redraw at one, or 0 to draw every frame.
+	choppyFps() {
+		let fps = 0
+		for (const mesh of this.diceList) {
+			const pixel = mesh.parent && mesh.diceTheme && mesh.diceTheme.pixel
+			if (pixel && pixel.fps && (!fps || pixel.fps < fps)) fps = pixel.fps
+		}
+		return fps
+	}
+
 	requestFrame() {
 		if (this.frameRequested || this.disposed) return
 		this.frameRequested = true
@@ -1505,8 +1582,14 @@ class DiceBox {
 		}
 		if (this.animatePops(now)) changed = true
 		this.applyPixelRatio()
-		if (changed || finished.length) this.renderer.render(this.scene, this.camera)
-		if (this.throws.length || this.popping()) this.requestFrame()
+		if (changed || finished.length) this.dirty = true
+		// choppy pixel dice redraw at their fps while the playback runs at full rate; the last pose always shows
+		const fps = this.dirty && !finished.length ? this.choppyFps() : 0
+		if (this.dirty && (!fps || now - this.lastDraw >= 1000 / fps - 2)) {
+			this.draw()
+			this.lastDraw = now
+		}
+		if (this.throws.length || this.popping() || this.dirty) this.requestFrame()
 	}
 
 	// Hands onImpact the throw's impacts that are due within IMPACT_LEAD_MS, each with `at`, the
@@ -1552,6 +1635,7 @@ class DiceBox {
 		const { glow, pop, style, color } = this.highlightOptions(highlight)
 		const kept = meshes.filter(mesh => mesh.mark !== "dropped")
 		const styles = glow ? kept.map(mesh => this.DiceFactory.glowResult(mesh, glow, style, color)) : []
+		if (!glow) kept.forEach(mesh => this.plainStamp(mesh))
 		const sweep = styles.includes("gilded")
 		const twinkle = this.diceList.some(mesh => mesh.parent && this.DiceFactory.glints(mesh))
 		if (pop || sweep || twinkle) this.popDice(pop ? kept : [], sweep, twinkle)
@@ -1580,9 +1664,15 @@ class DiceBox {
 				this.DiceFactory.glowResult(mesh, glow, style, color)
 			} else {
 				this.DiceFactory.unglow(mesh)
+				this.plainStamp(mesh)
 			}
 		}
-		if (!this.rolling && !this.popping()) this.renderer.render(this.scene, this.camera)
+		if (!this.rolling && !this.popping()) this.draw()
+	}
+
+	// A settled pixel die without a highlight still shows its result as an upright stamp, in its own colours.
+	plainStamp(mesh) {
+		if (mesh.diceTheme && mesh.diceTheme.pixel) this.DiceFactory.stampResult(mesh)
 	}
 
 	// A brief scale-up and settle, run by the render loop. Bodies are at rest and only the meshes are
@@ -1698,7 +1788,7 @@ class DiceBox {
 			this.scene.remove(dice);
 			if (dice.body) this.world.removeBody(dice.body);
 		}
-		this.renderer.render(this.scene, this.camera);
+		this.draw();
 	}
 
 	cancelFade() {
@@ -1721,6 +1811,8 @@ class DiceBox {
 			this.desk.geometry.dispose();
 			this.desk.material.dispose();
 		}
+		if (this.pixelPass) this.pixelPass.dispose();
+		this.pixelPass = null;
 		this.renderer.dispose();
 		this.renderer.forceContextLoss();
 		this.renderer.domElement.remove();
@@ -1931,7 +2023,7 @@ class DiceBox {
 				results.push(this.getDiceResults(dieId))
 			})
 
-			this.renderer.render(this.scene, this.camera);
+			this.draw();
 
 			this.onRemoveDiceComplete(results)
 

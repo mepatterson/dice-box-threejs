@@ -6,11 +6,19 @@ import {woodGrain, makeSurface, spectrumLayer} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
 import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
+import {pixelOf, buildPalette, fontFor, paintLabels, rgba, nearestTexture, pixelShader} from "./pixel.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
 
 const SHAPED_CACHE = 24;
+// A pixel label's canvas pixels per texel: its numbers are drawn turned at this resolution, so their
+// edges stay crisp under the nearest filtering.
+const PIXEL_UNIT = 4;
+// The ring around a highlighted pixel stamp.
+const PIXEL_INK = '#140c08';
+// A dropped pixel die's number, darkened like dimShader does its body.
+const dimColor = color => `#${new THREE.Color(color).multiplyScalar(0.6).getHexString()}`;
 
 const defaultConfig = {
 	baseScale: 100,
@@ -188,10 +196,12 @@ function dielectricShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''));
 }
 
-// Dims and desaturates a dropped die.
-function dimShader(shader) {
+// Dims and desaturates a dropped die. A pixel die only darkens, onto its palette's darker shades, which
+// have no greys to desaturate to.
+function dimShader(shader, pixel = false) {
+	const dim = pixel ? 'diffuseColor.rgb *= 0.42;' : 'diffuseColor.rgb = mix( vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) ), diffuseColor.rgb, 0.4 ) * 0.55;';
 	shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', `
-		diffuseColor.rgb = mix( vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) ), diffuseColor.rgb, 0.4 ) * 0.55;
+		${dim}
 		#include <normal_fragment_begin>`);
 }
 
@@ -367,7 +377,7 @@ class DiceFactory {
 	makeTheme(key, colordata, fontReady) {
 		const edges = colordata.glass_edges;
 		return {
-			key, colordata, fontReady, pins: 0,
+			key, colordata, fontReady, pins: 0, pixel: pixelOf(colordata), palette: null, samples: null,
 			textures: {}, materials: new Map(), glow: new Map(), variants: new Map(), tints: new Map(),
 			edges: edges !== undefined && edges !== null ? { value: clampEdges(edges) } : this.edges,
 			refraction: 'glass_refraction' in colordata ? { value: refractionOf(colordata.glass_refraction) } : this.refraction,
@@ -510,6 +520,10 @@ class DiceFactory {
 		if (style == 'auto') style = info && this.glowColor(info.forecolor).dark ? 'ink' : 'glow';
 		const fill = style == 'glow' || !info ? null : color || info.highlight || (style == 'gilded' ? '#B8892E' : '#F2743B');
 		const look = { intensity, style, fill };
+		if (mesh.diceTheme && mesh.diceTheme.pixel && info) {
+			this.stampResult(mesh, { fill: fill || this.glowColor(info.forecolor).color, ring: PIXEL_INK });
+			return style;
+		}
 		mesh.baseMaterial = mesh.material;
 		const materials = mesh.baseMaterial.slice();
 		if (mesh.shape == 'd4') {
@@ -531,7 +545,11 @@ class DiceFactory {
 		mesh.baseMaterial = mesh.material;
 		const materials = mesh.baseMaterial.map(mat => this.dimMaterial(mat));
 		const top = this.topFace(mesh).materialIndex;
-		if (mesh.shape == 'd4') {
+		if (mesh.diceTheme && mesh.diceTheme.pixel) {
+			mesh.material = materials;
+			const info = mesh.baseMaterial[mesh.shape == 'd4' ? 2 : top].diceLabel;
+			if (info) this.stampResult(mesh, { fill: dimColor(info.forecolor), ring: PIXEL_INK, strike: true });
+		} else if (mesh.shape == 'd4') {
 			const text = String(mesh.getFaceValue().value);
 			mesh.baseMaterial.forEach((mat, i) => {
 				if (i > 1 && i != top) materials[i] = this.strikeMaterial(mat, text);
@@ -539,7 +557,7 @@ class DiceFactory {
 		} else {
 			materials[top] = this.strikeMaterial(mesh.baseMaterial[top], null);
 		}
-		mesh.material = materials;
+		if (!mesh.stamp) mesh.material = materials;
 		const interior = mesh.interior;
 		if (interior) {
 			interior.baseMaterial = interior.material;
@@ -548,6 +566,7 @@ class DiceFactory {
 	}
 
 	unglow(mesh) {
+		mesh.stamp = null;
 		if (mesh.halo) {
 			mesh.remove(mesh.halo);
 			mesh.halo = null;
@@ -560,6 +579,79 @@ class DiceFactory {
 		if (!mesh.baseMaterial) return;
 		mesh.material = mesh.baseMaterial;
 		mesh.baseMaterial = null;
+	}
+
+	// A pixel die shows its result as a stamp: the number upright in the pixel font, drawn by the pixel pass
+	// one font pixel per pixel over the up face, whose own number is left off, so it reads whichever way
+	// the die came to rest. Only what is drawn changes. The stamp sits at the middle of the up face (a d4's
+	// at its top corner), in the die's own coordinates. Without a highlight it's in the number's colours.
+	stampResult(mesh, { fill = null, ring = null, strike = false } = {}) {
+		if (!mesh.baseMaterial) mesh.baseMaterial = mesh.material;
+		const base = mesh.baseMaterial;
+		const top = this.topFace(mesh);
+		const d4 = mesh.shape == 'd4';
+		const info = base[d4 ? 2 : top.materialIndex] && base[d4 ? 2 : top.materialIndex].diceLabel;
+		if (!info) return;
+		const text = d4 ? String(mesh.getFaceValue().value) : info.labels[info.index];
+		if (typeof text != 'string' || !text.trim()) return;
+		const materials = mesh.material.slice();
+		if (d4) materials.forEach((mat, i) => { if (i > 1 && i != top.materialIndex) materials[i] = this.bareMaterial(mat, base[i].diceLabel, text); });
+		else materials[top.materialIndex] = this.bareMaterial(materials[top.materialIndex], info, null);
+		mesh.material = materials;
+		const outlined = info.outline && info.outline != 'none' && info.outline != info.backcolor;
+		const share = d4 ? 0.18 : mesh.shape == 'd10' ? 0.24 : 0.32;
+		const texels = this.labelTexels(info.diceobj, mesh.diceTheme.pixel);
+		mesh.stamp = {
+			text, strike, ...fontFor(share * texels / text.split('\n').length),
+			fill: fill || info.forecolor, ring: ring || (outlined ? info.outline : null),
+			point: this.stampPoint(mesh, top),
+		};
+	}
+
+	stampPoint(mesh, top) {
+		const geometry = mesh.geometry;
+		const position = geometry.getAttribute('position');
+		if (mesh.shape == 'd4') {
+			const quaternion = mesh.body ? new THREE.Quaternion().copy(mesh.body.quaternion) : mesh.quaternion;
+			const up = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion.clone().invert());
+			const v = new THREE.Vector3(), point = new THREE.Vector3();
+			let best = -Infinity;
+			for (let i = 0; i < position.count; i++) {
+				v.fromBufferAttribute(position, i);
+				if (v.dot(up) > best) {
+					best = v.dot(up);
+					point.copy(v);
+				}
+			}
+			return point.multiplyScalar(0.85);
+		}
+		const index = geometry.index;
+		const point = new THREE.Vector3(), v = new THREE.Vector3();
+		let count = 0;
+		for (const group of geometry.groups) {
+			if (group.materialIndex != top.materialIndex) continue;
+			for (let i = group.start; i < group.start + group.count; i++) {
+				point.add(v.fromBufferAttribute(position, index ? index.getX(i) : i));
+				count++;
+			}
+		}
+		return count ? point.divideScalar(count) : this.facePlane(geometry, top).point.clone();
+	}
+
+	// A label material with its number left off (on a d4, only `text`), for under a stamp.
+	bareMaterial(base, info, text) {
+		if (!info) return base;
+		const key = `bare|${base.uuid}|${text}`;
+		const variants = this.ownerOf(base).variants;
+		let mat = variants.get(key);
+		if (mat) return mat;
+		mat = this.cloneMaterial(base);
+		const { composite, bump } = this.drawLabel(info, info.forecolor, { bare: text === null ? true : text });
+		mat.map = composite;
+		if (base.metalnessMap) mat.metalnessMap = bump;
+		mat.ownTextures = [composite, bump];
+		variants.set(key, mat);
+		return mat;
 	}
 
 	// A dark number gets a light halo instead of glowing in its own colour.
@@ -632,8 +724,8 @@ class DiceFactory {
 		this.dice_rainbow = info.rainbow;
 		this.label_font = info.font;
 		try {
-			return variant.strike || variant.recolor
-				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant.strike ? variant : null)
+			return variant.strike || variant.recolor || variant.bare
+				? this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, info.texture, forecolor, info.outline, info.backcolor, false, null, variant.strike ? variant : null, variant.bare || null)
 				: this.createTextMaterial(info.diceobj, info.labels, info.index, info.size, info.margin, null, forecolor, 'none', '#000000', false, variant);
 		} finally {
 			if (previous) this.selectTheme(previous);
@@ -648,9 +740,10 @@ class DiceFactory {
 		if (mat) return mat;
 		mat = this.cloneMaterial(base);
 		const compile = base.onBeforeCompile;
+		const pixel = Boolean(this.ownerOf(base).pixel);
 		mat.onBeforeCompile = (shader, renderer) => {
 			compile.call(mat, shader, renderer);
-			dimShader(shader);
+			dimShader(shader, pixel);
 		};
 		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|dim`;
 		if (mat.isGlass) mat.defines.DICE_DIM = '';
@@ -686,6 +779,7 @@ class DiceFactory {
 		const mat = base.clone();
 		mat.defines = { ...base.defines };
 		mat.onBeforeCompile = base.onBeforeCompile;
+		mat.customProgramCacheKey = base.customProgramCacheKey;
 		mat.isGlass = base.isGlass;
 		mat.glassUniforms = base.glassUniforms;
 		mat.diceTheme = base.diceTheme;
@@ -990,7 +1084,7 @@ class DiceFactory {
 				}
 
 				// on metal a bump at the number edges would mirror stray bits of the room as sparkles
-				if (this.bumpMapping && this.dice_material != 'glass' && !isMetal(this.dice_material)) {
+				if (this.bumpMapping && !this.pixel && this.dice_material != 'glass' && !isMetal(this.dice_material)) {
 					if (false) {
 						mat.bumpScale = 0.5;
 					} else {
@@ -1020,7 +1114,7 @@ class DiceFactory {
 				mat.fuzz = this.dice_texture_rand.fuzz;
 			}
 			const surface = this.dice_texture_rand.surface && this.surfaces.get(this.dice_texture_rand.surface);
-			if (surface && surface.glint && canvasTextures.bump && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
+			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
 			if (preset && preset.envMapIntensity) {
 				mat.envBase = mat.envMapIntensity;
 				this.applyEnvironment(mat);
@@ -1030,6 +1124,7 @@ class DiceFactory {
 			mat.depthTest = false;
 			mat.needUpdate = true;
 			mat.diceTheme = this.theme;
+			if (this.pixel) this.pixelate(mat);
 			if (canvasTextures && canvasTextures.key) this.mesh_materials_cache.set(this.materialKey(canvasTextures.key, i, size), mat);
 			materials.push(mat);
 		}
@@ -1100,6 +1195,7 @@ class DiceFactory {
 		mat.defines.GLASS_INTERIOR = '';
 		mat.envBase = mat.envMapIntensity;
 		this.applyEnvironment(mat);
+		if (this.pixel) this.pixelate(mat);
 		this.mesh_materials_cache.set(key, mat);
 		return mat;
 	}
@@ -1172,7 +1268,7 @@ class DiceFactory {
 	// With glow ({text}: only that number on a d4, or null for the face's label) it draws just the
 	// numbers, haloed in their colour on black, for use as an emissive map. With strike (the same
 	// {text}) the label is drawn as usual with that number crossed out.
-	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache, glow = null, strike = null) {
+	createTextMaterial(diceobj, labels, index, size, margin, texture, forecolor, outlinecolor, backcolor, allowcache, glow = null, strike = null, bare = null) {
 		if (labels[index] === undefined) return null;
 		if (glow) texture = { name: 'none' };
 
@@ -1189,6 +1285,13 @@ class DiceFactory {
 		let cachestring = this.textureKey(diceobj, labels, index, texture, forecolor, outlinecolor, backcolor);
 		if (allowcache && this.materials_cache[cachestring] != null) {
 			this.cache_hits++;
+			return this.materials_cache[cachestring];
+		}
+		if (this.pixel) {
+			const drawn = this.createPixelLabel(diceobj, labels, index, texture, forecolor, outlinecolor, backcolor, glow, strike, bare);
+			if (!allowcache || glow) return drawn;
+			this.cache_misses++;
+			this.materials_cache[cachestring] = { ...drawn, key: cachestring };
 			return this.materials_cache[cachestring];
 		}
 
@@ -1449,6 +1552,164 @@ class DiceFactory {
 		return {composite:compositetexture,bump:bumpMap,fuzz:fuzzMap};
 	}
 
+	// A pixel theme's material lights in flat bands (pixel.js) and writes depth wherever it draws, which
+	// the pixel pass reads as the dice's silhouette. Its depth test always passes, so dice still draw back
+	// to front over each other as they do without it.
+	pixelate(mat) {
+		const bands = this.pixel.bands;
+		const compile = mat.onBeforeCompile;
+		const key = mat.customProgramCacheKey();
+		mat.onBeforeCompile = function (shader, renderer) {
+			compile.call(this, shader, renderer);
+			pixelShader(shader, bands);
+		};
+		mat.customProgramCacheKey = () => `${key}|pixel${bands}`;
+		mat.depthTest = true;
+		mat.depthFunc = THREE.AlwaysDepth;
+		mat.depthWrite = true;
+	}
+
+	// How many texels a pixel label has across, so one texel is about one pixel of a die resting face up
+	// at the theme's pixel size: the die type's face scale (world units per UV unit, from its classic
+	// geometry) times the pixels per world unit that size gives.
+	labelTexels(diceobj, pixel = this.pixel) {
+		let geom = this.geometries[diceobj.type];
+		if (!geom) geom = this.geometries[diceobj.type] = this.createGeometry(diceobj.shape, diceobj.scale * this.baseScale);
+		if (!geom.worldPerUV) {
+			const position = geom.getAttribute('position');
+			const uv = geom.getAttribute('uv');
+			const group = geom.groups.find(g => g.materialIndex > 0) || geom.groups[0] || { start: 0 };
+			const a = group.start, b = group.start + 1;
+			const world = Math.hypot(position.getX(b) - position.getX(a), position.getY(b) - position.getY(a), position.getZ(b) - position.getZ(a));
+			const span = Math.hypot(uv.getX(b) - uv.getX(a), uv.getY(b) - uv.getY(a));
+			geom.worldPerUV = span > 0 ? world / span : diceobj.scale * this.baseScale;
+		}
+		return Math.max(8, Math.round(pixel.size / (2 * this.baseScale) * geom.worldPerUV));
+	}
+
+	// A label for the pixel style: the body (and its texture) shrunk to a few texels across, then the
+	// numbers in a bitmap font with a one texel ring in the outline colour, every texel drawn as a
+	// PIXEL_UNIT square so a turned number keeps crisp edges. Sampled with nearest filtering. The bump
+	// canvas is the numbers' mask, for the metal paint and the fuzz.
+	createPixelLabel(diceobj, labels, index, texture, forecolor, outlinecolor, backcolor, glow, strike, bare) {
+		const text = labels[index];
+		const texels = this.labelTexels(diceobj);
+		const unit = PIXEL_UNIT;
+		const ts = 512;
+		const work = document.createElement('canvas');
+		work.width = work.height = 128;
+		const context = work.getContext('2d');
+		context.scale(work.width / ts, work.height / ts);
+		const bumpWork = document.createElement('canvas');
+		bumpWork.width = bumpWork.height = 4;
+		const contextBump = bumpWork.getContext('2d');
+		context.globalAlpha = texture.composite == 'destination-in' || glow ? 1 : this.body_opacity;
+		context.fillStyle = glow ? '#000000' : backcolor;
+		context.fillRect(0, 0, ts, ts);
+		context.globalAlpha = 1;
+		let isTexture = false;
+		if (!glow) {
+			if (texture.texture && texture.name != '' && texture.name != 'none') {
+				context.globalCompositeOperation = texture.composite || 'source-over';
+				context.drawImage(texture.texture, 0, 0, ts, ts);
+				context.globalCompositeOperation = 'source-over';
+			} else if (texture.surface) {
+				this.drawSurface(context, contextBump, ts, index, texture.surface, backcolor);
+			} else if (this.dice_material == 'wood') {
+				this.drawWoodGrain(context, contextBump, ts, index);
+			}
+			if (text instanceof HTMLImageElement) {
+				isTexture = true;
+				context.drawImage(text, 0, 0, text.width, text.height, 0, 0, ts, ts);
+			}
+		}
+		const small = document.createElement('canvas');
+		small.width = small.height = texels;
+		const smallContext = small.getContext('2d', { willReadFrequently: true });
+		smallContext.imageSmoothingQuality = 'high';
+		smallContext.drawImage(work, 0, 0, texels, texels);
+		if (!glow && index > 0 && this.theme && !this.theme.samples) this.theme.samples = this.sampleColors(smallContext, texels);
+
+		const canvas = document.createElement('canvas');
+		canvas.width = canvas.height = texels * unit;
+		const ctx = canvas.getContext('2d', { willReadFrequently: true });
+		ctx.imageSmoothingEnabled = false;
+		ctx.drawImage(small, 0, 0, canvas.width, canvas.height);
+		const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+		const bump = glow ? null : new ImageData(new Uint8ClampedArray(image.data.length).fill(255), canvas.width, canvas.height);
+
+		const placements = isTexture || bare === true ? [] : this.pixelPlacements(diceobj, text, index, texels, glow).filter(p => bare === null || p.text != bare);
+		if (placements.length) {
+			const outlined = outlinecolor !== false && outlinecolor != 'none' && outlinecolor != backcolor;
+			const lines = String(placements[0].text).split('\n').length;
+			const share = diceobj.shape == 'd4' ? 0.18 : diceobj.shape == 'd10' ? 0.24 : 0.32;
+			const { font, scale } = fontFor(share * texels / lines);
+			let fill = rgba(forecolor), ring = outlined ? rgba(outlinecolor) : null;
+			if (glow) {
+				const lit = rgba(forecolor);
+				fill = glow.knockout ? [0, 0, 0, 255] : lit;
+				ring = glow.knockout ? lit : lit && [lit[0] * 0.45, lit[1] * 0.45, lit[2] * 0.45, 255];
+			}
+			if (strike) placements.forEach(p => { p.strike = strike.text == null || p.text == strike.text; });
+			paintLabels(image, bump, { placements, font, scale, unit, fill, ring });
+		}
+		ctx.putImageData(image, 0, 0);
+		const composite = nearestTexture(canvas);
+		if (glow) return { composite };
+
+		const bumpCanvas = document.createElement('canvas');
+		bumpCanvas.width = bumpCanvas.height = canvas.width;
+		bumpCanvas.getContext('2d').putImageData(bump, 0, 0);
+		const bumpMap = !isTexture && this.dice_material != 'glass' ? nearestTexture(bumpCanvas, THREE.NoColorSpace) : null;
+		if (bumpMap) bumpMap.format = THREE.RedFormat;
+		const fuzz = this.pixel.fuzz && texture.fuzz && this.dice_material != 'glass' && !isTexture ? this.drawFuzz(bumpCanvas, index, texture) : null;
+		return { composite, bump: bumpMap, fuzz };
+	}
+
+	// Where a label's numbers go, in texels: the middle of the face (a d10's sits a little low, a d20's a
+	// little left), turned like the classic labels; a d4's three numbers each near a corner.
+	pixelPlacements(diceobj, text, index, texels, glow) {
+		const half = texels / 2;
+		const turn = (x, y, angle) => ({
+			x: half + (x - half) * Math.cos(angle) - (y - half) * Math.sin(angle),
+			y: half + (x - half) * Math.sin(angle) + (y - half) * Math.cos(angle),
+		});
+		if (diceobj.shape == 'd4') {
+			return text.map((label, i) => {
+				if (typeof label != 'string' || (glow && glow.text != null && glow.text != label)) return null;
+				const angle = i * Math.PI * 2 / 3;
+				return { text: label, ...turn(half, texels * 0.2, angle), angle };
+			}).filter(Boolean);
+		}
+		if (typeof text != 'string' || !text.trim()) return [];
+		if (glow && glow.text != null && !text.includes(glow.text)) return [];
+		const rotate = { d8: index > 0 && index % 2 != 0 ? -127.5 : -7.5, d10: -6, d12: 5, d20: -7.5 };
+		const angle = (rotate[diceobj.shape] || 0) * Math.PI / 180;
+		const x = diceobj.shape == 'd20' ? half * 0.98 : half;
+		const y = diceobj.shape == 'd10' ? texels * 0.558 : half;
+		return [{ text, ...turn(x, y, angle), angle }];
+	}
+
+	// The opaque colours of a label's body, sRGB 0 to 1, for the theme's palette.
+	sampleColors(context, size) {
+		const data = context.getImageData(0, 0, size, size).data;
+		const samples = [];
+		for (let i = 0; i < data.length; i += 4) if (data[i + 3] > 24) samples.push([data[i] / 255, data[i + 1] / 255, data[i + 2] / 255]);
+		return samples;
+	}
+
+	// The palette a pixel theme's dice snap to (pixel.js), built once its first label has been drawn.
+	pixelPalette(theme) {
+		if (!theme || !theme.pixel) return [];
+		if (theme.palette) return theme.palette;
+		const { colordata } = theme;
+		const foreground = Array.isArray(colordata.foreground) ? colordata.foreground[0] : colordata.foreground;
+		const highlights = [colordata.highlight || '#F2743B', '#B8892E', foreground && this.glowColor(foreground).color].filter(Boolean);
+		const palette = buildPalette(theme.pixel.palette, colordata, theme.samples || [], highlights);
+		if (theme.samples || theme.pixel.palette !== 'auto') theme.palette = palette;
+		return palette;
+	}
+
 	// Where a fuzzy texture's strands grow on this label, as a grey map at half the label's size: the
 	// surface's fuzz field (or everywhere, for a texture without one) turned and shifted like its
 	// colours, times the bump canvas, whose black numbers and strike bars leave bare patches.
@@ -1587,6 +1848,7 @@ class DiceFactory {
 		this.dice_rainbow = !!colordata.rainbow;
 		this.dice_iridescence = typeof colordata.iridescence == 'number' ? Math.min(1, Math.max(0, colordata.iridescence)) : null;
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
+		this.pixel = pixelOf(colordata);
 	}
 
 	// pass in colorset data from dice-box

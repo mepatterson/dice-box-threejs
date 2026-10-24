@@ -391,6 +391,40 @@ spacings), `lean` how far tips sway sideways, `taper` how much a strand narrows,
 the tips lighten to `tip`. Shells cost one more draw call per face (their runs of groups are merged) and
 the fragments of each shell; glass never grows fuzz.
 
+### Pixel style
+A colorset with `pixel` draws its dice as chunky pixel art. They tumble with the same physics and land on
+the same faces; only how they are drawn changes.
+```javascript
+box.roll("1d20+2d6", { colorset: { foreground: "#ffe0c0", background: "#b8321c", outline: "#2a0a04", texture: "swirl", pixel: true } })
+// every option, with its default
+pixel: { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps: 0, fuzz: false }
+```
+- **Low resolution.** Pixel dice render into a target at a fraction of the canvas, so a die of `baseScale`
+  is about `size` pixels across, and it is drawn over the canvas with nearest filtering. The grid is fixed
+  to the canvas's corner, so it never shimmers as dice move.
+- **Palette.** A post pass snaps every pixel to a palette, with ordered (4x4 Bayer) dithering between the
+  two nearest colours; `dither` 0 picks the nearest colour only. `"auto"` builds the palette from the
+  colorset's colours and the colours its labels show (median cut), each with a short ramp of shades, plus
+  the highlight colours and a near black and white. A list of CSS colours is used as given (up to 64), a
+  number n is n levels per channel (at most 4), and `false` keeps the rendered colours. Glass is dithered
+  into a few steps of opacity and shadows into a dithered dark.
+- **Flat shading.** Direct light falls in `bands` steps (0 for smooth) and highlights are flat spots in a
+  few levels, so each face reads as one facet. Metal, glass, wood and the textures keep their own materials.
+- **Pixel numbers and outline.** Labels are drawn small in a bitmap font (3x5, or 5x7 on bigger faces) and
+  sampled with nearest filtering. `outline` draws a one pixel outline around the dice: `"auto"` a dark
+  shade of the pixel beside it, a CSS colour, or `false`.
+- **The result.** A die turned at any angle can't keep a one pixel number crisp, so when pixel dice settle
+  the result is stamped upright over the up face (whose own number is left off), one font pixel per pixel:
+  in the highlight colour with a dark ring when `highlightResult` is on, a dropped die's struck through
+  and dimmed, otherwise in the number's own colours.
+- **Choppy motion.** `fps` (4 to 30, 12 is "on twos") redraws at that rate while the dice move; the
+  playback still runs at full rate and the last pose always shows.
+- **Fuzz.** Fur shells are off in the pixel style (at this size they only roughen the outline); `fuzz: true`
+  keeps them.
+
+Pixel and classic dice share a table: the classic ones draw at full resolution and the pixel ones over
+them, each with their own shadows. A table without pixel dice draws exactly as before.
+
 ## Getting Results
 ### There are three ways to get results
 1. You can define an `onRollComplete` callback function when creating the Dice Box
