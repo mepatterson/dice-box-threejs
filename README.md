@@ -437,7 +437,16 @@ carry over to them.
 
 `fuzz: "auto"` picks how many shells by device and shares a budget across the fuzzy dice on the table:
 up to 16 per die on a desktop (160 in all), 12 on a tablet (96), 8 on a phone (60), never fewer than 6, 5
-and 5. A number caps the shells per die; `false` leaves the fuzz to the bump map. `updateConfig({ fuzz })`
+and 5. Longer fur (`growth` above 1) gets up to twice the shells on a desktop and one and a half times on a
+tablet, so it doesn't read as stacked slices, and counts that much more against the budget; a phone keeps
+its count.
+
+A moss or growth colorset's `growth` (0 to 2, 1 when left out) turns up how much of the rock the moss
+covers and how long its fur grows, together: 0 is bare stone, 1 the usual look and 2 overgrown, every face
+covered in fur twice as long. Past 1.5 the fur starts to grow over the numbers too.
+```
+theme_customColorset: { name: "overgrown", foreground: "#F4EBD0", background: "#5A5A55", outline: "#1A1A16", texture: "moss", growth: 1.8 }
+``` A number caps the shells per die; `false` leaves the fuzz to the bump map. `updateConfig({ fuzz })`
 changes it for the dice that follow. A texture's own entry tunes the strands:
 ```
 fuzz: { shells: 16, length: 0.12, density: 36, thickness: 0.55, lean: 0.3, taper: 0.7, fade: 0.7, root: 1, color: '#4a7326', tint: 0.5, tip: '#d4e48a', tipMix: 0.4 }

@@ -2,7 +2,7 @@
 import {DicePreset} from './DicePreset.js'
 import {MATERIALTYPES} from "./const/materialtypes"
 import {DICE_GEOM} from "./const/dice"
-import {woodGrain, makeSurface, spectrumLayer, shade, MOSS_GREEN} from "./surfaces.js"
+import {woodGrain, makeSurface, spectrumLayer, shade, MOSS_GREEN, GROWING} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
 import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
@@ -34,7 +34,9 @@ const defaultConfig = {
 	textureScale: 0.5,
 	glass_opacity: 0.35,
 	// the most fur shells a die with a fuzzy texture draws (the box sets it by device); 0 draws none
-	fuzzShells: MAX_SHELLS
+	fuzzShells: MAX_SHELLS,
+	// how far longer fur (growth above 1) may multiply a die's shells (the box sets it by device)
+	fuzzStretch: 1
 }
 
 // Glass writes premultiplied colour so its reflections are added on top of what shows through the
@@ -339,6 +341,7 @@ class DiceFactory {
 		this.dice_coat = null;
 		this.dice_inner = null;
 		this.inner_color = '';
+		this.dice_growth = 1;
 		this.inner_clouds = new Map();
 		this.innerCount = INNER_BUDGETS.desktop;
 		this.dot_texture = null;
@@ -1015,9 +1018,11 @@ class DiceFactory {
 		const shells = new THREE.InstancedMesh(shellGeometry(dicemesh.geometry), this.no_fuzz, MAX_SHELLS);
 		shells.instanceMatrix = this.shell_matrix;
 		Object.defineProperty(shells, 'material', { configurable: true, get: () => this.shellMaterials(dicemesh.material), set() {} });
-		const most = Math.min(MAX_SHELLS, Math.max(...dicemesh.material.map(mat => (mat.fuzz ? mat.fuzz.shells || FUZZ_DEFAULTS.shells : 0))));
-		shells.onBeforeRender = () => { shells.count = Math.min(most, this.fuzz_state.value); };
+		const stretch = Math.max(...dicemesh.material.map(mat => this.stretchOf(mat)));
+		const most = Math.min(MAX_SHELLS, Math.max(...dicemesh.material.map(mat => (mat.fuzz ? Math.round((mat.fuzz.shells || FUZZ_DEFAULTS.shells) * stretch) : 0))));
+		shells.onBeforeRender = () => { shells.count = Math.min(most, Math.round(this.fuzz_state.value * stretch)); };
 		shells.count = most;
+		shells.stretch = stretch;
 		shells.frustumCulled = false;
 		shells.castShadow = false;
 		shells.raycast = () => {};
@@ -1025,6 +1030,12 @@ class DiceFactory {
 		dicemesh.add(shells);
 		dicemesh.fuzz = shells;
 		return dicemesh;
+	}
+
+	// Longer fur (a growth above 1) gets more shells, so its strands don't read as stacked slices: as many
+	// times more as it is longer, up to what the device allows (fuzzStretch; a phone keeps its count).
+	stretchOf(mat) {
+		return mat && mat.fuzz ? Math.max(1, Math.min(mat.fuzz.stretch || 1, this.fuzzStretch)) : 1;
 	}
 
 	shellMaterials(materials) {
@@ -1044,8 +1055,9 @@ class DiceFactory {
 		if (mat) return mat;
 		if (!this.strand_field) this.strand_field = strandField();
 		const state = this.fuzz_state;
-		const most = Math.min(MAX_SHELLS, (base.fuzz && base.fuzz.shells) || FUZZ_DEFAULTS.shells);
-		mat = shellMaterial(base, { field: this.strand_field, shells: { get value() { return Math.min(most, state.value); } }, dim: Boolean(base.fuzzDim) });
+		const stretch = this.stretchOf(base);
+		const most = Math.min(MAX_SHELLS, Math.round(((base.fuzz && base.fuzz.shells) || FUZZ_DEFAULTS.shells) * stretch));
+		mat = shellMaterial(base, { field: this.strand_field, shells: { get value() { return Math.min(most, Math.round(state.value * stretch)); } }, dim: Boolean(base.fuzzDim) });
 		variants.set(key, mat);
 		return mat;
 	}
@@ -1185,12 +1197,13 @@ class DiceFactory {
 					}
 				}
 			}
-			if (canvasTextures && canvasTextures.fuzz) {
+			if (canvasTextures && canvasTextures.fuzz && this.dice_growth > 0) {
 				mat.fuzzMap = canvasTextures.fuzz;
 				const fuzz = this.dice_texture_rand.fuzz;
 				mat.fuzz = fuzz && this.dice_texture_rand.shades ? { ...fuzz, color: this.shaded(fuzz.color || FUZZ_DEFAULTS.color), tip: this.shaded(fuzz.tip || FUZZ_DEFAULTS.tip) } : fuzz;
+				if (mat.fuzz && this.dice_growth != 1) mat.fuzz = { ...mat.fuzz, length: (mat.fuzz.length || FUZZ_DEFAULTS.length) * this.dice_growth, stretch: this.dice_growth };
 			}
-			const surface = this.dice_texture_rand.surface && this.surfaces.get(this.dice_texture_rand.surface);
+			const surface = this.dice_texture_rand.surface && this.surface(this.dice_texture_rand.surface);
 			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
 			if (!this.pixel) {
 				if (this.dice_grain && isMetal(this.dice_material)) this.addGrain(mat, this.dice_grain);
@@ -1344,7 +1357,7 @@ class DiceFactory {
 		}
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
 		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
-		if (texture.surface) finish += this.dice_material + this.dice_accent + (this.dice_rainbow ? 'rainbow' : '');
+		if (texture.surface) finish += this.dice_material + this.dice_accent + (this.dice_rainbow ? 'rainbow' : '') + (this.growing(texture.surface) ? `growth${this.dice_growth}` : '');
 		if (this.dice_iridescence !== null) finish += `iridescence${this.dice_iridescence}`;
 		finish += fontKey(this.labelFont(diceobj));
 		if (diceobj.shape == 'd4') {
@@ -1645,7 +1658,7 @@ class DiceFactory {
 		const fuzzMap = texture.fuzz && this.dice_material != 'glass' && !isTexture ? this.drawFuzz(canvasBump, index, texture) : null;
 		// The bump canvas is grey (a height and the paint mask) and uploads as one channel, except
 		// where it also carries glitter flecks. Glass without flecks never samples it.
-		const glinting = texture.surface && this.surfaces.get(texture.surface)?.glint && (this.dice_material == 'none' || this.dice_material == 'glass');
+		const glinting = texture.surface && this.surface(texture.surface)?.glint && (this.dice_material == 'none' || this.dice_material == 'glass');
 		if (!isTexture && (glinting || this.dice_material != 'glass')) {
 			bumpMap = new THREE.CanvasTexture(canvasBump);
 			bumpMap.anisotropy = this.maxAnisotropy;
@@ -1825,12 +1838,15 @@ class DiceFactory {
 		const canvas = document.createElement('canvas');
 		canvas.width = canvas.height = size;
 		const context = canvas.getContext('2d');
-		const surface = texture.surface && this.surfaces.get(texture.surface);
+		const surface = texture.surface && this.surface(texture.surface);
 		context.fillStyle = surface && surface.fuzz ? '#000000' : '#FFFFFF';
 		context.fillRect(0, 0, size, size);
 		if (surface && surface.fuzz) this.drawPattern(context, surface.fuzz, size, index);
 		context.globalCompositeOperation = 'multiply';
+		// past a growth of 1.5 the numbers grow over too, fully at 2.5
+		context.globalAlpha = Math.min(1, Math.max(0, 2.5 - this.dice_growth));
 		context.drawImage(canvasBump, 0, 0, size, size);
+		context.globalAlpha = 1;
 		const map = new THREE.CanvasTexture(canvas);
 		map.format = THREE.RedFormat;
 		return map;
@@ -1882,9 +1898,9 @@ class DiceFactory {
 	// colour, and its height faintly into the bump canvas (except on metal, where that canvas is the
 	// paint mask). The numbers are drawn on top of both, so no grain shows through them.
 	drawSurface(context, contextBump, ts, index, name, backcolor) {
-		if (!this.surfaces.has(name)) this.surfaces.set(name, makeSurface(name));
-		const surface = this.surfaces.get(name);
+		const surface = this.surface(name);
 		if (!surface) return;
+		name = this.surfaceKey(name);
 		const accent = this.dice_accent || `#${new THREE.Color(backcolor).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
 		context.globalCompositeOperation = 'source-over';
 		// in glass the layers are inclusions: partly opaque, so the room still shows through them
@@ -1906,6 +1922,22 @@ class DiceFactory {
 			this.drawPattern(contextBump, surface.height, ts, index);
 			contextBump.globalAlpha = 1;
 		}
+	}
+
+	// A procedural surface (surfaces.js), generated the first time it is needed and kept per box. Moss and
+	// growth are kept per growth (the colorset's `growth`, 0 to 2, 1 when left out).
+	surface(name) {
+		const key = this.surfaceKey(name);
+		if (!this.surfaces.has(key)) this.surfaces.set(key, makeSurface(name, 512, { growth: this.growing(name) ? this.dice_growth : 1 }));
+		return this.surfaces.get(key);
+	}
+
+	growing(name) {
+		return GROWING.includes(name) && this.dice_growth != 1;
+	}
+
+	surfaceKey(name) {
+		return this.growing(name) ? `${name}@${this.dice_growth}` : name;
 	}
 
 	// One of moss's colours moved to the colorset's accent (surfaces.js `shade`), for a texture whose
@@ -1967,6 +1999,8 @@ class DiceFactory {
 		this.dice_coat = COATS.includes(colordata.coat) ? colordata.coat : null;
 		this.dice_inner = INNER_STYLES.includes(colordata.inner) ? colordata.inner : null;
 		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : '#FFFFFF');
+		const growth = Number(colordata.growth);
+		this.dice_growth = colordata.growth !== undefined && colordata.growth !== null && colordata.growth !== '' && Number.isFinite(growth) ? Math.max(0, Math.round(growth * 100) / 100) : 1;
 	}
 
 	// pass in colorset data from dice-box

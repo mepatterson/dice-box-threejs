@@ -8,7 +8,7 @@ import * as THREE from "three"
 // over edges and corners and turn with the die. How long they grow comes from the label's fuzz map:
 // the surface's fuzz field turned and shifted like its colours, with the numbers knocked out.
 
-export const MAX_SHELLS = 24
+export const MAX_SHELLS = 32
 
 const FIELD = { SIZE: 48, CELLS: 10, SEED: 91 }
 

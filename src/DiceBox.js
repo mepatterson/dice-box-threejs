@@ -134,11 +134,13 @@ const NUDGE_LIFT = 0.15
 const NUDGE_SLIDE = 0.45
 
 // Fur shells by device: at most `most` per die, `budget` across every fuzzy die on the table, never
-// fewer than `least`. A phone or a tablet is told by its coarse pointer and its screen's short side.
+// fewer than `least`. Longer fur (a colorset's growth above 1) multiplies a die's shells by up to
+// `stretch` and counts that many times against the budget; a phone keeps its count.
+// A phone or a tablet is told by its coarse pointer and its screen's short side.
 const FUZZ_BUDGETS = {
-	desktop: { most: 16, budget: 160, least: 6 },
-	tablet: { most: 12, budget: 96, least: 5 },
-	phone: { most: 8, budget: 60, least: 5 },
+	desktop: { most: 16, budget: 160, least: 6, stretch: 2 },
+	tablet: { most: 12, budget: 96, least: 5, stretch: 1.5 },
+	phone: { most: 8, budget: 60, least: 5, stretch: 1 },
 }
 
 // A phone or a tablet is told by its coarse pointer and its screen's short side.
@@ -149,7 +151,7 @@ function deviceClass() {
 }
 
 function fuzzBudget(fuzz) {
-	if (fuzz === false || !(fuzz === "auto" || fuzz === true || Number(fuzz) > 0)) return { most: 0, budget: 0, least: 0 }
+	if (fuzz === false || !(fuzz === "auto" || fuzz === true || Number(fuzz) > 0)) return { most: 0, budget: 0, least: 0, stretch: 1 }
 	const device = FUZZ_BUDGETS[deviceClass()]
 	const most = Math.min(MAX_SHELLS, Number(fuzz) > 0 ? Math.round(Number(fuzz)) : device.most)
 	return { ...device, most, least: Math.min(device.least, most) }
@@ -315,12 +317,14 @@ class DiceBox {
 	applyFuzz() {
 		this.fuzzBudget = fuzzBudget(this.fuzz)
 		this.DiceFactory.fuzzShells = this.fuzzBudget.most
+		this.DiceFactory.fuzzStretch = this.fuzzBudget.stretch
 	}
 
-	// Before every render: the fuzzy dice on the table share the shell budget.
+	// Before every render: the fuzzy dice on the table share the shell budget, a die with longer fur
+	// counting as many times as its shells are multiplied.
 	updateFuzz() {
 		let fuzzy = 0
-		for (const mesh of this.diceList) if (mesh.fuzz) fuzzy++
+		for (const mesh of this.diceList) if (mesh.fuzz) fuzzy += mesh.fuzz.stretch
 		if (!fuzzy) return
 		const { most, budget, least } = this.fuzzBudget
 		const shells = most > 0 ? Math.max(least, Math.min(most, Math.floor(budget / fuzzy))) : 0

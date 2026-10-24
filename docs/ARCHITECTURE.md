@@ -212,7 +212,10 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   layers and neighbouring faces sort among themselves, and they draw right after their die (higher id, same
   depth). The shell count is one uniform (`fuzz_state`): `DiceBox.updateFuzz`, run from `scene.onBeforeRender`,
   shares the device's budget (`FUZZ_BUDGETS`) over the fuzzy dice on the table; each shell mesh sets its
-  instance count in `onBeforeRender`. Shells cast no shadow and are never part of the physics.
+  instance count in `onBeforeRender`. A colorset's `growth` (`dice_growth`) gives moss and growth their own
+  surface per value (`surface`, keyed `moss@1.5`), with the moss field shifted so it covers none of the rock at
+  0 and all of it at 2, scales `fuzz.length` by it and multiplies the shells by it up to the device's `stretch`
+  (`stretchOf`), which `updateFuzz` counts against the budget; past 1.5 the fuzz map stops knocking out the numbers. Shells cast no shadow and are never part of the physics.
 - **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. The body
   opacity is a uniform (`glassOpacity`, behind the `GLASS_OPACITY` define), so glass of every opacity
   shares programs. Each

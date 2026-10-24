@@ -383,8 +383,13 @@ function sparkles(size) {
 // height lifts the moss gently over the rock, with a fine fuzz of stems on top and a coarser grain below.
 // `greens` are the layers for the damp stain, the cushions' deep base, their mid and light tones, the
 // bright tips and the shadows between stems.
+// `growth` (0 bare stone, 1 as drawn, 2 overgrown) shifts how much of the rock the moss covers: its field is
+// lowered until nothing grows at 0, and raised until the cushions cover every face at 2.
 const MOSS_GREENS = ['#34441a', '#1b3010', '#3f6626', MOSS_GREEN, '#b2d256', '#0c1707'].map(color => ({ color }));
-function moss(size, greens = MOSS_GREENS) {
+export const GROWING = ['moss', 'growth'];
+const spreadOf = growth => (growth < 1 ? -0.62 * (1 - growth) : 0.45 * (growth - 1));
+function moss(size, { growth = 1 } = {}, greens = MOSS_GREENS) {
+	const spread = spreadOf(growth);
 	const n1 = valueNoise(81), n2 = valueNoise(82, 128), n3 = valueNoise(83, 128), n4 = valueNoise(84), n5 = valueNoise(85, 128);
 	const next = random(86);
 	const N = 7;
@@ -409,7 +414,7 @@ function moss(size, greens = MOSS_GREENS) {
 		const patch = fbm(n4, u * 2.2 + 9, v * 2.2 + 4, 3);
 		const tuft = fbm(n2, u * 40, v * 40, 2);
 		const fibre = n3(u * 150, v * 150), stem = n2(u * 260 + 7, v * 260 + 3), grit = n5(u * 190, v * 190);
-		const t = 0.55 * clump + 0.5 * patch + 0.55 * (0.5 - rock) - 0.5 + 0.12 * (tuft - 0.5) + 0.14 * (fibre - 0.5);
+		const t = 0.55 * clump + 0.5 * patch + 0.55 * (0.5 - rock) - 0.5 + 0.12 * (tuft - 0.5) + 0.14 * (fibre - 0.5) + spread;
 		const cover = smoothstep(-0.02, 0.07, t);
 		const thick = smoothstep(0, 0.45, t);
 		const bare = 1 - cover;
@@ -417,7 +422,7 @@ function moss(size, greens = MOSS_GREENS) {
 		const coarse = fbm(n5, u * 45 + 5, v * 45 + 8, 2);
 		o.masks[0] = bare * (0.12 * fine + 0.2 * smoothstep(0.5, 0.75, 1 - rock) + 0.14 * smoothstep(0.55, 0.7, coarse) + 0.28 * smoothstep(-0.1, 0, t));
 		o.masks[1] = bare * 0.22 * smoothstep(0.7, 0.85, n3(u * 110 + 9, v * 110 + 4)) * (1 - smoothstep(-0.2, 0, t));
-		o.masks[2] = bare * 0.4 * smoothstep(-0.22, 0, t);
+		o.masks[2] = bare * 0.4 * smoothstep(-0.22, 0, t) * Math.min(1, growth);
 		o.masks[3] = cover;
 		o.masks[4] = cover * smoothstep(0.3, 0.75, 0.55 * thick + 0.45 * tuft + 0.25 * fibre);
 		o.masks[5] = cover * 0.75 * smoothstep(0.55, 0.85, 0.6 * thick + 0.4 * tuft + 0.15 * fibre);
@@ -431,8 +436,8 @@ function moss(size, greens = MOSS_GREENS) {
 
 // Moss in the accent's colours: each of moss's greens becomes an accent layer naming the green it
 // stands for (`shade`), drawn as that green moved to the accent.
-function growth(size) {
-	return moss(size, MOSS_GREENS.map(({ color }) => ({ color: 'accent', shade: color })));
+function growth(size, options) {
+	return moss(size, options, MOSS_GREENS.map(({ color }) => ({ color: 'accent', shade: color })));
 }
 
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
@@ -462,7 +467,7 @@ export function woodGrain(size = 256) {
 
 const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth };
 
-export function makeSurface(name, size = 512) {
+export function makeSurface(name, size = 512, options = {}) {
 	const generate = GENERATORS[name];
-	return generate ? generate(size) : null;
+	return generate ? generate(size, options) : null;
 }
