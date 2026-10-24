@@ -7,9 +7,9 @@ import * as THREE from "three"
 // Metal grain (`grain` on a metal colorset), the metal's own normal map: brushed (fine parallel
 // streaks, with the roughness streaky too), hammered (overlapping shallow dents with ridges between
 // them) and worn (soft dents, scratches and pits, rougher in the pits).
-// Coats (`coat`), a clearcoatNormalMap over any material with a clear coat: scratched (fine hairline
-// scratches), flake (metallic flake, tiny facets each tilted its own way) and weave (a carbon-fibre
-// weave of round tows).
+// Coats (`coat`), a clearcoatNormalMap over any material with a clear coat, drawn at a scale a die a couple
+// of hundred pixels across can show (finer ones read as per-pixel noise): scratched (a few dozen long,
+// curved scratches), flake (big soft flakes, each tilted its own way) and weave (a coarse carbon-fibre twill).
 // Pebble (the leather texture's grain): rounded pebbles of a jittered cellular noise with creases between
 // them, rougher in the creases; its roughness factor also tells the leather patch where they are.
 
@@ -175,55 +175,20 @@ function worn(size) {
 	})
 }
 
-// Hairline scratches in a clear coat: many short, thin cuts, most of them along two directions, a few
-// anywhere, each with a crisp V profile.
-function scratched(size) {
-	const next = random(131)
-	const main = next() * Math.PI
-	const cuts = Array.from({ length: 220 }, () => {
-		const x = next(), y = next(), l = 0.04 + 0.22 * next()
-		const a = next() < 0.75 ? main + (next() < 0.5 ? 0 : Math.PI / 2) + (next() - 0.5) * 0.5 : next() * Math.PI
-		return [x, y, x + Math.cos(a) * l, y + Math.sin(a) * l, 0.25 + 0.75 * next(), (0.6 + 0.9 * next()) / size]
-	})
-	return fromHeight(size, 9, (u, v, o) => {
-		let h = 1
-		for (const [ax, ay, bx, by, depth, width] of cuts) {
-			const [d, at] = toSegment(u, v, ax, ay, bx, by)
-			if (d < width * 2) h -= depth * (1 - smoothstep(0, width, d)) * Math.sin(at * Math.PI) ** 0.5 * 0.5
-		}
-		o.height = h
-	})
-}
-
-// Metallic flake: jittered cells, each one flat facet tilted its own way, so the coat glints in
-// scattered points as the light moves. Written straight as normals.
-function flake(size) {
-	const next = random(141)
-	const N = 26
-	const cells = []
-	for (let i = 0; i < N; i++) {
-		for (let j = 0; j < N; j++) cells.push([(i + 0.1 + 0.8 * next()) / N, (j + 0.1 + 0.8 * next()) / N, (next() - 0.5) * 0.8, (next() - 0.5) * 0.8])
-	}
+// The tangent-space normals of a height field (0 to 1) as RGBA bytes, alpha 128 (a roughness factor of 1),
+// each texel optionally tilted further by its own slope (`slopes`, x and y per texel).
+function normalsOf(size, heights, strength, slopes = null) {
 	const data = new Uint8Array(size * size * 4)
+	const at = (x, y) => heights[(((y % size) + size) % size) * size + (((x % size) + size) % size)]
 	for (let y = 0; y < size; y++) {
 		for (let x = 0; x < size; x++) {
-			const u = (x + 0.5) / size, v = (y + 0.5) / size
-			const ci = Math.floor(u * N), cj = Math.floor(v * N)
-			let best = Infinity, tilt = null
-			for (let di = -1; di <= 1; di++) {
-				for (let dj = -1; dj <= 1; dj++) {
-					const c = cells[(((ci + di) % N) + N) % N * N + (((cj + dj) % N) + N) % N]
-					const d = wrapped(u, v, c[0], c[1])
-					if (d < best) {
-						best = d
-						tilt = c
-					}
-				}
-			}
-			const l = Math.hypot(tilt[2], tilt[3], 1)
+			const k = y * size + x
+			const dx = (at(x + 1, y) - at(x - 1, y)) * 0.5 * strength + (slopes ? slopes[k * 2] : 0)
+			const dy = (at(x, y + 1) - at(x, y - 1)) * 0.5 * strength + (slopes ? slopes[k * 2 + 1] : 0)
+			const l = Math.hypot(dx, dy, 1)
 			const i = (y * size + x) * 4
-			data[i] = Math.round((tilt[2] / l * 0.5 + 0.5) * 255)
-			data[i + 1] = Math.round((tilt[3] / l * 0.5 + 0.5) * 255)
+			data[i] = Math.round((-dx / l * 0.5 + 0.5) * 255)
+			data[i + 1] = Math.round((-dy / l * 0.5 + 0.5) * 255)
 			data[i + 2] = Math.round((1 / l * 0.5 + 0.5) * 255)
 			data[i + 3] = 128
 		}
@@ -231,19 +196,115 @@ function flake(size) {
 	return data
 }
 
-// A plain weave of round tows, alternating along and across, with fine fibres along each tow.
+// Scratches in a clear coat, sized for a die a couple of hundred pixels across: a few dozen long, gently
+// curved cuts a few texels wide (a face shows one tile), most of them along two directions, each with a
+// soft rounded groove that is deepest in its middle and fades out at both ends. A groove's two walls face
+// opposite ways, so a scratch shows as a bright line where one of them catches a light. Each cut is
+// drawn segment by segment over only the texels near it.
+function scratched(size) {
+	const next = random(131)
+	const main = next() * Math.PI
+	const heights = new Float32Array(size * size).fill(1)
+	const STEPS = 14
+	for (let k = 0; k < 38; k++) {
+		const x = next() * size, y = next() * size, length = (0.22 + 0.55 * next()) * size
+		const angle = next() < 0.8 ? main + (next() < 0.6 ? 0 : Math.PI / 2) + (next() - 0.5) * 0.35 : next() * Math.PI
+		const bend = (next() - 0.5) * 0.35 * length
+		const width = 1.6 + 2.2 * next() ** 2
+		const depth = 0.35 + 0.65 * next()
+		const ex = x + Math.cos(angle) * length, ey = y + Math.sin(angle) * length
+		const cx = (x + ex) / 2 - Math.sin(angle) * bend, cy = (y + ey) / 2 + Math.cos(angle) * bend
+		const point = t => [(1 - t) ** 2 * x + 2 * (1 - t) * t * cx + t * t * ex, (1 - t) ** 2 * y + 2 * (1 - t) * t * cy + t * t * ey]
+		for (let s = 0; s < STEPS; s++) {
+			const t0 = s / STEPS, t1 = (s + 1) / STEPS
+			const [ax, ay] = point(t0), [bx, by] = point(t1)
+			const vx = bx - ax, vy = by - ay, vv = vx * vx + vy * vy || 1
+			const pad = width + 1
+			for (let py = Math.floor(Math.min(ay, by) - pad); py <= Math.ceil(Math.max(ay, by) + pad); py++) {
+				for (let px = Math.floor(Math.min(ax, bx) - pad); px <= Math.ceil(Math.max(ax, bx) + pad); px++) {
+					const u = Math.min(1, Math.max(0, ((px + 0.5 - ax) * vx + (py + 0.5 - ay) * vy) / vv))
+					const d = Math.hypot(px + 0.5 - ax - vx * u, py + 0.5 - ay - vy * u) / width
+					if (d >= 1) continue
+					const along = t0 + (t1 - t0) * u
+					const h = 1 - depth * 0.5 * (1 + Math.cos(Math.PI * d)) * Math.sin(along * Math.PI) ** 0.6
+					const i = (((py % size) + size) % size) * size + (((px % size) + size) % size)
+					if (h < heights[i]) heights[i] = h
+				}
+			}
+		}
+	}
+	return normalsOf(size, heights, 3.2)
+}
+
+// Metallic flake, big enough to see on a die: round flakes of a few sizes scattered on a jittered grid with
+// clear coat between them, each one flat facet tilted its own way with a soft rim that eases back to the
+// coat's surface, so each reads as a disc that flashes when its tilt brings a light into view as the die
+// turns. Written straight as normals.
+function flake(size) {
+	const next = random(141)
+	const N = 10
+	const cells = []
+	for (let i = 0; i < N; i++) {
+		for (let j = 0; j < N; j++) {
+			const a = next() * Math.PI * 2, tilt = 0.18 + 0.3 * next(), r = next() < 0.15 ? 0 : (0.22 + 0.2 * next()) / N
+			cells.push([(i + 0.3 + 0.4 * next()) / N, (j + 0.3 + 0.4 * next()) / N, Math.cos(a) * tilt, Math.sin(a) * tilt, r])
+		}
+	}
+	const data = new Uint8Array(size * size * 4)
+	for (let y = 0; y < size; y++) {
+		for (let x = 0; x < size; x++) {
+			const u = (x + 0.5) / size, v = (y + 0.5) / size
+			const ci = Math.floor(u * N), cj = Math.floor(v * N)
+			let rim = 0, tilt = null
+			for (let di = -1; di <= 1; di++) {
+				for (let dj = -1; dj <= 1; dj++) {
+					const c = cells[(((ci + di) % N) + N) % N * N + (((cj + dj) % N) + N) % N]
+					if (!c[4]) continue
+					const cover = 1 - smoothstep(c[4] * 0.7, c[4], wrapped(u, v, c[0], c[1]))
+					if (cover > rim) {
+						rim = cover
+						tilt = c
+					}
+				}
+			}
+			const tx = tilt ? tilt[2] * rim : 0, ty = tilt ? tilt[3] * rim : 0
+			const l = Math.hypot(tx, ty, 1)
+			const i = (y * size + x) * 4
+			data[i] = Math.round((tx / l * 0.5 + 0.5) * 255)
+			data[i + 1] = Math.round((ty / l * 0.5 + 0.5) * 255)
+			data[i + 2] = Math.round((1 / l * 0.5 + 0.5) * 255)
+			data[i + 3] = 128
+		}
+	}
+	return data
+}
+
+// A carbon-fibre 2x2 twill of round tows, coarse enough to read on a die: each tow passes over two
+// crossings and under two, the next one shifted by one, so the floats step along diagonals. A tow is
+// rounded across and dips where it goes under its neighbour, and the floats running one way are tilted
+// one way and those running the other another, as carbon's fibres catch the light along their length:
+// the two directions light up in turn as the die turns, which is what makes carbon's checker show.
 function weave(size) {
-	const fibres = noise(151, 512, 8)
-	const TOWS = 4
-	return fromHeight(size, 5, (u, v, o) => {
-		const i = Math.floor(u * TOWS), j = Math.floor(v * TOWS)
-		const fx = u * TOWS - i, fy = v * TOWS - j
-		const along = (i + j) % 2 == 0
-		const across = along ? fy : fx
-		const edge = Math.max(0, 1 - (2 * across - 1) ** 2)
-		const fibre = along ? fibres(u, v) : fibres(v, u)
-		o.height = 0.2 + 0.7 * Math.sqrt(edge) + 0.08 * (fibre - 0.5) * edge
-	})
+	const TOWS = 8
+	const TILT = 0.3
+	const heights = new Float32Array(size * size)
+	const slopes = new Float32Array(size * size * 2)
+	for (let y = 0; y < size; y++) {
+		for (let x = 0; x < size; x++) {
+			const u = (x + 0.5) / size * TOWS, v = (y + 0.5) / size * TOWS
+			const i = Math.floor(u), j = Math.floor(v)
+			const warp = ((i + j) % 4 + 4) % 4 < 2
+			const across = warp ? u - i : v - j
+			// where along its two-crossing float the tow is, 0 to 2
+			const start = warp ? (((j + i) % 4 + 4) % 4 == 0 ? j : j - 1) : (((j + i) % 4 + 4) % 4 == 2 ? i : i - 1)
+			const along = (warp ? v : u) - start
+			const round = Math.sin(Math.PI * across) ** 0.7
+			const dip = 0.55 + 0.45 * Math.sin(Math.PI * along / 2)
+			heights[y * size + x] = 0.15 + 0.85 * round * dip
+			slopes[(y * size + x) * 2 + (warp ? 0 : 1)] = warp ? TILT : -TILT
+		}
+	}
+	return normalsOf(size, heights, 4, slopes)
 }
 
 // Pebble grain: each cell of a wrapped Voronoi a low rounded pebble, F2 - F1 small where two meet, so
@@ -281,9 +342,9 @@ const RELIEFS = {
 	brushed: { draw: brushed, repeat: 1.5, scale: 0.5 },
 	hammered: { draw: hammered, repeat: 1.2, scale: 1 },
 	worn: { draw: worn, repeat: 1, scale: 0.7 },
-	scratched: { draw: scratched, repeat: 1.5, scale: 1 },
-	flake: { draw: flake, repeat: 4, scale: 1.2 },
-	weave: { draw: weave, repeat: 10, scale: 0.6 },
+	scratched: { draw: scratched, repeat: 1, scale: 1 },
+	flake: { draw: flake, repeat: 1.3, scale: 1 },
+	weave: { draw: weave, repeat: 1.25, scale: 1 },
 	pebble: { draw: pebble, repeat: 3, scale: 0.8 },
 }
 

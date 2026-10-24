@@ -228,9 +228,17 @@ box and shared by every theme. The pixel style leaves them out.
 ```
 theme_customColorset: { name: "candy", foreground: "#FFFFFF", background: "#8B1E3F", outline: "#2a0a14", coat: "flake" }
 ```
-- `scratched`: fine hairline scratches, most along two directions.
-- `flake`: metallic flake, tiny facets each tilted its own way, so the coat glints in scattered points.
-- `weave`: a carbon-fibre weave of round tows.
+- `scratched`: a few dozen long, gently curved scratches, most along two directions, each a soft groove
+  that shows as a bright line where it catches a light.
+- `flake`: big soft metallic flakes with clear coat between them, each tilted its own way, so they flash
+  in turn as the die turns.
+- `weave`: a coarse carbon-fibre 2x2 twill whose floats running one way catch the light the others
+  don't, so the checker of carbon shows.
+
+They are drawn at a scale a die a couple of hundred pixels across can show (about one tile per face),
+mipmapped and anisotropically filtered; where the mipmaps average a relief's facets into a shorter normal,
+the coat's highlight widens there (Toksvig) instead of flickering from pixel to pixel. `coat_strength`
+scales the relief: 1 (the default) as drawn, 0 flat, 2 twice as deep.
 
 Plastic and wood have a clear coat already; a metal, glass or matte texture (moss) gets a light one
 (`clearcoat` 0.6) when a coat is picked. On glass the coat's reflections join the glass's own. The pixel

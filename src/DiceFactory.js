@@ -202,6 +202,12 @@ const bloomOf = colordata => {
 	return !pixelOf(colordata) && colordata.bloom !== true && Number.isFinite(bloom) && bloom > 0 ? bloom : colordata.bloom === true && !pixelOf(colordata) ? 1 : 0;
 };
 
+// A colorset's open-ended amount (coat_strength, inner_speed): a number from 0 up, or `fallback` when left out.
+const amountOf = (value, fallback) => {
+	const n = Number(value);
+	return value !== undefined && value !== null && value !== '' && Number.isFinite(n) ? Math.max(0, n) : fallback;
+};
+
 const PICKS = ['dice_color_rand', 'label_color_rand', 'label_outline_rand', 'dice_texture_rand', 'dice_material_rand', 'edge_color_rand'];
 
 // Metal reflects the environment tinted by the body colour, so a dark body still reads as metal by
@@ -295,6 +301,26 @@ function leatherShader(shader) {
 			#endif
 		`)
 		.replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace('mapN.xy *= normalScale;', 'mapN.xy *= normalScale * leatherFlat;'));
+}
+
+// A coat's relief at a distance: its mipmaps average several grooves or flakes into one shorter normal, and
+// that spread (Toksvig's) widens the coat's highlight there instead of leaving a sharp one to flicker from
+// pixel to pixel. A stronger coat (clearcoatNormalScale) spreads further.
+function coatShader(shader) {
+	shader.fragmentShader = shader.fragmentShader
+		.replace('#include <clearcoat_normal_fragment_maps>', `
+			float coatSpread = 0.0;
+			#ifdef USE_CLEARCOAT_NORMALMAP
+				vec3 clearcoatMapN = texture2D( clearcoatNormalMap, vClearcoatNormalMapUv ).xyz * 2.0 - 1.0;
+				float coatLength = length( clearcoatMapN );
+				coatSpread = max( 1.0 - coatLength - 0.015, 0.0 ) / max( coatLength, 0.05 ) * dot( clearcoatNormalScale, clearcoatNormalScale ) * 0.5;
+				clearcoatMapN.xy *= clearcoatNormalScale;
+				clearcoatNormal = normalize( tbn2 * clearcoatMapN );
+			#endif`)
+		.replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
+			#ifdef USE_CLEARCOAT
+				material.clearcoatRoughness = min( sqrt( material.clearcoatRoughness * material.clearcoatRoughness + coatSpread ), 1.0 );
+			#endif`);
 }
 
 // Dims and desaturates a dropped die. A pixel die only darkens, onto its palette's darker shades, which
@@ -407,6 +433,7 @@ class DiceFactory {
 		this.reliefs = new Map();
 		this.dice_grain = null;
 		this.dice_coat = null;
+		this.coat_strength = 1;
 		this.dice_inner = null;
 		this.inner_color = '';
 		this.dice_growth = 1;
@@ -1383,11 +1410,19 @@ class DiceFactory {
 		mat.roughnessMap = texture;
 	}
 
-	// A coat: the relief as the clear coat's own normal map, over whatever bump the surface has.
+	// A coat: the relief as the clear coat's own normal map, over whatever bump the surface has, at the
+	// colorset's coat_strength (1 as drawn, 0 flat).
 	addCoat(mat, name) {
 		const { texture, scale } = this.relief(name);
+		const compile = mat.onBeforeCompile;
+		const key = mat.customProgramCacheKey();
 		mat.clearcoatNormalMap = texture;
-		mat.clearcoatNormalScale.set(scale, scale);
+		mat.clearcoatNormalScale.set(scale * this.coat_strength, scale * this.coat_strength);
+		mat.onBeforeCompile = function (shader, renderer) {
+			compile.call(this, shader, renderer);
+			coatShader(shader);
+		};
+		mat.customProgramCacheKey = () => `${key}|coat`;
 	}
 
 	glints(mesh) {
@@ -2209,6 +2244,7 @@ class DiceFactory {
 		this.pixel = pixelOf(colordata);
 		this.dice_grain = GRAINS.includes(colordata.grain) ? colordata.grain : null;
 		this.dice_coat = COATS.includes(colordata.coat) ? colordata.coat : null;
+		this.coat_strength = amountOf(colordata.coat_strength, 1);
 		this.dice_inner = INNER_STYLES.includes(colordata.inner) ? colordata.inner : null;
 		this.dice_stitching = Boolean(colordata.stitching) && colordata.stitching !== 'off';
 		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : '#FFFFFF');

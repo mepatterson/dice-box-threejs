@@ -277,13 +277,18 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   has no bump map, since a bump or a hard threshold at the number edges mirrored stray bits of the
   room as sparkles. `brushedmetal` is a `MeshPhysicalMaterial` with anisotropy.
 - **Reliefs** (`normals.js`, `DiceFactory.relief`): tiling 256px normal maps drawn once per box from
-  height fields (central differences; `flake` is written straight as per-cell normals) and shared by
+  height fields (central differences; `flake` is written straight as per-flake normals) and shared by
   every theme, each a `DataTexture` with the tangent-space normal in rgb and half a roughness factor in
   alpha, repeated `repeat` times across a face with its own `scale`. A metal colorset's `grain`
   (`addGrain`) sets the relief as the material's `normalMap` and `roughnessMap`: `metalShader` reads the
   roughness from the alpha (times two) and flattens the normal where the paint mask says number
   (`mapN.xy *= normalScale * (1 - metalPaint)`), so the numbers stay crisp. A colorset's `coat`
-  (`addCoat`) sets it as the `clearcoatNormalMap`, separate from the surface's own bump; a preset
+  (`addCoat`) sets it as the `clearcoatNormalMap`, separate from the surface's own bump, scaled by
+  `coat_strength`, and adds `coatShader`: the mipmapped normal's shortening (its length below 1, times the
+  scale squared) is Toksvig's spread, added to the clear coat's roughness, so a relief too fine for the pixels
+  widens the coat's highlight instead of flickering. The coats are drawn at a die's scale, about a tile per
+  face (scratches a few texels wide drawn segment by segment, flakes as separate discs, a 2x2 twill whose two
+  float directions are tilted apart); finer maps read as per-pixel noise. A preset
   without a clear coat (metal, glass, moss) gets `LIGHT_COAT` first (`materialPreset`), which makes it a
   `MeshPhysicalMaterial`. On glass `glassShader` adds the clear coat's specular to the glass reflections
   (`glassPainted` is the diffuse and emissive light directly, so the coat never leaks into the body).
