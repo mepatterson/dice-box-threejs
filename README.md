@@ -91,8 +91,23 @@ light in the colorset's `accent` (or the number colour): emissive, with a white-
 a soft halo round it, so they glow on any page without any light. The result highlight burns a neon number
 brighter instead of drawing a second glow over it.
 
+`material: "energy"` is a die of nothing but glowing lines in the `accent` (orange without one), with no
+body and no shadow: a bundle of three thin parallel lines just inside every edge of every face, so each edge
+carries six, and two fainter contour lines a little further in. Lines on faces turned away from you are
+dimmer, so the back of the die reads as depth through the front. The lines are additive, a pixel or so wide
+at any size, with a soft halo and a white-hot core where they run brightest (and where they cross), and a
+pulse of light runs round each loop. The numbers are glowing strokes, dim until a face is the result, which
+burns at full strength with a halo, so a settled result reads through the lines. Switches, each on unless
+`"off"` (or `false`): `energy_faces` (the contour lines), `energy_flow` (the pulses; they hold still under
+`prefers-reduced-motion`) and `energy_core` (the white-hot core). It looks best with `bloom`. The lines
+follow the die type's polyhedron, so a `shape` moves only the numbers; the pixel style draws neon instead.
+```
+theme_customColorset: { name: "ember wire", foreground: "#ffffff", background: "#000000", outline: "none", material: "energy", accent: "#ff8a2b", bloom: 1 }
+```
+The lines are one small geometry per die type (about 600 triangles on a d20) and one extra draw per die.
+
 A colorset's `bloom` (a strength, 1 the usual; 0 or left out for none) makes what glows on its dice bloom:
-lava's cracks, neon tubes, and on other textures the result glow. Only those dice are drawn again, writing
+lava's cracks, neon tubes, energy's lines, and on other textures the result glow. Only those dice are drawn again, writing
 nothing but their own glow, into a small half-float target that three's `UnrealBloomPass` blurs, and the
 blur is laid over the canvas as premultiplied light whose opacity is its brightness (at most 0.65, so a
 number under its glow stays crisp). Over the page it reads as glow in its own colour, with no dark fringe

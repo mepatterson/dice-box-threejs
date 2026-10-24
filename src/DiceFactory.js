@@ -11,6 +11,7 @@ import {GRAINS, COATS, makeRelief} from "./normals.js"
 import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
 import {LAVA_GLOW, lavaTextures, lavaShader} from "./lava.js"
 import {bloomShader} from "./bloom.js"
+import {ENERGY, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader} from "./energy.js"
 import {radialDot} from "./helpers.js"
 
 import * as THREE from "three"
@@ -207,6 +208,13 @@ const amountOf = (value, fallback) => {
 	const n = Number(value);
 	return value !== undefined && value !== null && value !== '' && Number.isFinite(n) ? Math.max(0, n) : fallback;
 };
+
+// Energy labels: the numbers in white on black, drawn as strokes (createTextMaterial), with no texture.
+const ENERGY_LABEL = { name: 'none' };
+const ENERGY_INK = '#FFFFFF';
+
+// A colorset's on/off switch that is on unless it says false or "off".
+const switchOf = value => value !== false && value !== 'off';
 
 const PICKS = ['dice_color_rand', 'label_color_rand', 'label_outline_rand', 'dice_texture_rand', 'dice_material_rand', 'edge_color_rand'];
 
@@ -443,6 +451,9 @@ class DiceFactory {
 		this.drift_time = { value: 0 };
 		this.lava_textures = null;
 		this.lava_time = { value: 0 };
+		this.energy_time = { value: 0 };
+		this.energy_lines = new Map();
+		this.energy_look = { faces: true, flow: true, core: true };
 		this.bloom_only = { value: 0 };
 
 		this.material_options = {
@@ -486,6 +497,8 @@ class DiceFactory {
 		this.dot_texture = null;
 		if (this.lava_textures) Object.values(this.lava_textures).forEach(texture => texture.dispose());
 		this.lava_textures = null;
+		this.energy_lines.forEach(lines => lines && lines.dispose());
+		this.energy_lines = new Map();
 		this.shell_sets = new WeakMap();
 		this.far_sets = new WeakMap();
 		this.geometries = {};
@@ -676,7 +689,8 @@ class DiceFactory {
 			materials[top] = this.glowMaterial(materials[top], null, look);
 		}
 		mesh.material = materials;
-		const neon = mesh.baseMaterial[mesh.shape == 'd4' ? 2 : top].neonGlow;
+		const lit = mesh.baseMaterial[mesh.shape == 'd4' ? 2 : top];
+		const neon = lit.neonGlow || lit.energyGlow;
 		const halo = neon ? `#${new THREE.Color(neon.value.x, neon.value.y, neon.value.z).getHexString()}` : fill || (info && this.glowColor(info.forecolor).color);
 		if (info) this.addHalo(mesh, halo, intensity, neon ? 'glow' : style);
 		return style;
@@ -706,6 +720,10 @@ class DiceFactory {
 			interior.baseMaterial = interior.material;
 			interior.material = this.dimMaterial(interior.material);
 		}
+		if (mesh.energy) {
+			mesh.energy.baseMaterial = mesh.energy.material;
+			mesh.energy.material = this.energyLinesMaterial(true, mesh.diceTheme);
+		}
 	}
 
 	unglow(mesh) {
@@ -714,10 +732,10 @@ class DiceFactory {
 			mesh.remove(mesh.halo);
 			mesh.halo = null;
 		}
-		const interior = mesh.interior;
-		if (interior && interior.baseMaterial) {
-			interior.material = interior.baseMaterial;
-			interior.baseMaterial = null;
+		for (const child of [mesh.interior, mesh.energy]) {
+			if (!child || !child.baseMaterial) continue;
+			child.material = child.baseMaterial;
+			child.baseMaterial = null;
 		}
 		if (!mesh.baseMaterial) return;
 		mesh.material = mesh.baseMaterial;
@@ -900,6 +918,7 @@ class DiceFactory {
 		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|dim`;
 		if (mat.isGlass) mat.defines.DICE_DIM = '';
 		if (mat.lavaUniforms) mat.defines.LAVA_DIM = '';
+		if (mat.energyGlow) mat.defines.ENERGY_DIM = '';
 		mat.fuzzDim = true;
 		variants.set(key, mat);
 		return mat;
@@ -943,6 +962,7 @@ class DiceFactory {
 		mat.fuzzDim = base.fuzzDim;
 		mat.lavaUniforms = base.lavaUniforms;
 		mat.neonGlow = base.neonGlow;
+		mat.energyGlow = base.energyGlow;
 		return mat;
 	}
 
@@ -959,6 +979,12 @@ class DiceFactory {
 			// a neon number is already light: the result's tubes burn brighter instead of drawing a second glow
 			const glow = base.neonGlow.value;
 			mat.neonGlow = { value: glow.clone().setW(glow.w * (1 + 0.4 * intensity)) };
+			glows.set(key, mat);
+			return mat;
+		}
+		if (base.energyGlow) {
+			// an energy number is dim until it is the result, which burns at full strength
+			mat.energyGlow = { value: base.energyGlow.value.clone().setW(ENERGY.RESULT * Math.min(1.5, 0.6 + 0.4 * intensity)) };
 			glows.set(key, mat);
 			return mat;
 		}
@@ -1023,12 +1049,17 @@ class DiceFactory {
 		// Inner sparkles come between the back and front faces, so they read as inside the glass.
 		const inner = interior && this.dice_inner && this.innerCount > 0 ? this.innerPoints(type, geom) : null;
 		dicemesh = new THREE.Mesh(geom, materials);
+		const energy = this.dice_material == 'energy' ? this.energyMesh(diceobj) : null;
 		if (farFur) dicemesh.add(farFur);
 		if (interior) dicemesh.add(interior);
 		if (inner) dicemesh.add(inner);
+		if (energy) dicemesh.add(energy);
 		dicemesh.interior = interior;
 		dicemesh.inner = inner;
-		dicemesh.flows = dicemesh.material.some(mat => mat.lavaUniforms);
+		dicemesh.energy = energy;
+		// an energy die is only light: no shadow
+		dicemesh.shadowless = this.dice_material == 'energy';
+		dicemesh.flows = dicemesh.material.some(mat => mat.lavaUniforms) || Boolean(energy && this.energy_look.flow);
 		dicemesh.result = [];
 		dicemesh.shape = diceobj.shape;
 		dicemesh.rerolls = 0;
@@ -1276,6 +1307,10 @@ class DiceFactory {
 				materials.push(mat);
 				continue;
 			}
+			if (this.dice_material == 'energy') {
+				materials.push(this.energyMaterial(diceobj, labels, i, size, margin, allowcache));
+				continue;
+			}
 			const preset = this.materialPreset();
 			if (this.dice_material == 'glass') {
 				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
@@ -1451,6 +1486,63 @@ class DiceFactory {
 		};
 	}
 
+	// Energy (energy.js): no body, so the bevels draw nothing and each label is its number as glowing strokes in
+	// the accent (energyGlow), dim until its face is the result (glowMaterial). Cached like any label material.
+	energyMaterial(diceobj, labels, index, size, margin, allowcache) {
+		if (index == 0) {
+			let mat = this.mesh_materials_cache.get('energy|bevel');
+			if (!mat) {
+				mat = new THREE.MeshBasicMaterial({ visible: false });
+				mat.diceTheme = this.theme;
+				this.mesh_materials_cache.set('energy|bevel', mat);
+			}
+			return mat;
+		}
+		const key = this.textureKey(diceobj, labels, index, ENERGY_LABEL, ENERGY_INK, 'none', '#000000');
+		const cached = allowcache && key && this.mesh_materials_cache.get(this.materialKey(key, index, size));
+		if (cached) return cached;
+		const { composite } = this.createTextMaterial(diceobj, labels, index, size, margin, ENERGY_LABEL, ENERGY_INK, 'none', '#000000', allowcache);
+		const mat = new THREE.MeshBasicMaterial({ map: composite, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, premultipliedAlpha: true });
+		const color = new THREE.Color(this.dice_accent || ENERGY_GLOW);
+		mat.energyGlow = { value: new THREE.Vector4(color.r, color.g, color.b, ENERGY.NUMBER) };
+		mat.defines = { DICE_ENERGY: '', ...(this.energy_look.core && { ENERGY_HOT: '' }) };
+		mat.onBeforeCompile = function (shader) {
+			energyNumberShader(shader, this.energyGlow);
+		};
+		mat.diceLabel = { theme: this.theme, diceobj, labels, index, size, margin, forecolor: ENERGY_INK, outline: 'none', backcolor: '#000000', texture: ENERGY_LABEL, material: this.dice_material, opacity: 1, accent: this.dice_accent, rainbow: false, font: this.label_font, highlight: null };
+		mat.diceTheme = this.theme;
+		if (allowcache && key) this.mesh_materials_cache.set(this.materialKey(key, index, size), mat);
+		return mat;
+	}
+
+	// An energy die's lines (energy.js): its type's ribbons, shared per type, in the theme's material.
+	energyMesh(diceobj) {
+		const faces = this.energy_look.faces;
+		const key = `${diceobj.shape}|${diceobj.scale * this.baseScale}|${faces}`;
+		if (!this.energy_lines.has(key)) this.energy_lines.set(key, energyLines(diceobj.shape, diceobj.scale * this.baseScale, { faces }));
+		const geometry = this.energy_lines.get(key);
+		if (!geometry) return null;
+		const lines = new THREE.Mesh(geometry, this.energyLinesMaterial(false));
+		lines.frustumCulled = false;
+		lines.castShadow = false;
+		lines.raycast = () => {};
+		lines.blooms = true;
+		return lines;
+	}
+
+	energyLinesMaterial(dim, theme = this.theme) {
+		const look = theme && theme.energy ? theme.energy : { color: this.dice_accent || ENERGY_GLOW, ...this.energy_look };
+		if (theme && !theme.energy) theme.energy = look;
+		const key = `energy|lines|${dim}`;
+		const cache = theme ? theme.materials : this.mesh_materials_cache;
+		let mat = cache.get(key);
+		if (mat) return mat;
+		mat = energyLinesMaterial({ ...look, time: this.energy_time, dim });
+		mat.diceTheme = theme;
+		cache.set(key, mat);
+		return mat;
+	}
+
 	// Bloom (bloom.js): while the box draws its bloom layer the material writes only its emissive light.
 	addBloom(mat) {
 		const compile = mat.onBeforeCompile;
@@ -1564,7 +1656,7 @@ class DiceFactory {
 			});
 		}
 		const opacity = this.body_opacity < 1 ? this.body_opacity : '';
-		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
+		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' || this.dice_material == 'energy' ? this.dice_material : '';
 		if (texture.surface) finish += this.dice_material + this.dice_accent + (this.dice_rainbow ? 'rainbow' : '') + (this.growing(texture.surface) ? `growth${this.dice_growth}` : '');
 		if (this.dice_iridescence !== null) finish += `iridescence${this.dice_iridescence}`;
 		if (this.dice_stitching && texture.surface) finish += 'stitched';
@@ -1793,7 +1885,7 @@ class DiceFactory {
 					}
 
 					context.fillStyle = forecolor;
-					context.fillText(textlines[i], textstartx, textstarty);
+					this.ink(context, textlines[i], textstartx, textstarty, fontsize);
 					if (glow) this.finishGlow(context, glow, textlines[i], textstartx, textstarty);
 
 					contextBump.fillStyle = "#000000";
@@ -1801,7 +1893,7 @@ class DiceFactory {
 
 					if (textline == '6' || textline == '9') {
 						const dotx = textstartx + context.measureText(textline).width / 2;
-						context.fillText('.', dotx, textstarty);
+						this.ink(context, '.', dotx, textstarty, fontsize);
 						contextBump.fillText('.', dotx, textstarty);
 					}
 					if (strike && textline) this.strikeThrough([context, contextBump], textline, textstartx, textstarty - fontsize * 0.1, fontsize, forecolor, outlined ? outlinecolor : null);
@@ -1837,7 +1929,7 @@ class DiceFactory {
 
 					//draw label in top middle section
 					context.fillStyle = forecolor;
-					context.fillText(text[i], hw, labely);
+					this.ink(context, text[i], hw, labely, font.size);
 					if (glow) this.finishGlow(context, glow, text[i], hw, labely);
 
 					contextBump.fillStyle = "#000000";
@@ -1869,7 +1961,7 @@ class DiceFactory {
 		// The bump canvas is grey (a height and the paint mask) and uploads as one channel, except
 		// where it also carries glitter flecks. Glass without flecks never samples it.
 		const glinting = texture.surface && this.surface(texture.surface)?.glint && (this.dice_material == 'none' || this.dice_material == 'glass');
-		if (!isTexture && (glinting || this.dice_material != 'glass')) {
+		if (!isTexture && (glinting || (this.dice_material != 'glass' && this.dice_material != 'energy'))) {
 			bumpMap = new THREE.CanvasTexture(canvasBump);
 			bumpMap.anisotropy = this.maxAnisotropy;
 			if (!glinting) bumpMap.format = THREE.RedFormat;
@@ -2216,6 +2308,20 @@ class DiceFactory {
 		return canvas;
 	}
 
+	// A label's number in its fill style; an energy label's as a glowing stroke round a faint fill.
+	ink(context, text, x, y, size) {
+		if (this.dice_material != 'energy') return context.fillText(text, x, y);
+		context.save();
+		context.globalAlpha = 0.18;
+		context.fillText(text, x, y);
+		context.globalAlpha = 1;
+		context.lineJoin = 'round';
+		context.lineWidth = size * 0.075;
+		context.strokeStyle = context.fillStyle;
+		context.strokeText(text, x, y);
+		context.restore();
+	}
+
 	// Doubles the halo, and with knockout leaves the number itself unlit.
 	finishGlow(context, glow, text, x, y) {
 		context.fillText(text, x, y);
@@ -2242,6 +2348,9 @@ class DiceFactory {
 		this.dice_iridescence = typeof colordata.iridescence == 'number' ? Math.min(1, Math.max(0, colordata.iridescence)) : null;
 		this.body_opacity = this.dice_material == 'glass' ? Math.min(1, Math.max(0, colordata.glass_opacity ?? this.glass_opacity)) : 1;
 		this.pixel = pixelOf(colordata);
+		// the pixel style has no lines to draw energy with; it draws neon's tubes instead
+		if (this.pixel && this.dice_material == 'energy') this.dice_material = 'neon';
+		this.energy_look = { faces: switchOf(colordata.energy_faces), flow: switchOf(colordata.energy_flow), core: switchOf(colordata.energy_core) };
 		this.dice_grain = GRAINS.includes(colordata.grain) ? colordata.grain : null;
 		this.dice_coat = COATS.includes(colordata.coat) ? colordata.coat : null;
 		this.coat_strength = amountOf(colordata.coat_strength, 1);

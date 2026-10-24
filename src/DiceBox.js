@@ -7,6 +7,7 @@ import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { INNER_BUDGETS } from './sparkles.js';
 import { LAVA_PERIOD } from './lava.js';
+import { ENERGY_PERIOD } from './energy.js';
 import { DiceColors } from './DiceColors.js';
 import { fontOf, loadFont } from './fonts.js';
 import { THEMES } from './const/themes.js';
@@ -440,7 +441,7 @@ class DiceBox {
 			for (const type of types) {
 				const mesh = this.DiceFactory.create(type, shape)
 				if (!mesh) continue
-				mesh.castShadow = this.shadows
+				mesh.castShadow = this.shadows && !mesh.shadowless
 				group.add(mesh)
 				for (const mat of [...mesh.material, ...mesh.children.flatMap(child => child.material)]) {
 					for (const texture of [mat.map, mat.bumpMap, mat.metalnessMap, mat.glintMap, mat.fuzzMap]) if (texture) this.renderer.initTexture(texture)
@@ -1253,7 +1254,7 @@ class DiceBox {
 		const { pos, axis, angle, velocity } = vectordata
 		dicemesh.notation = vectordata
 		dicemesh.result = []
-		dicemesh.castShadow = this.shadows
+		dicemesh.castShadow = this.shadows && !dicemesh.shadowless
 		dicemesh.moving = true
 		dicemesh.body = new CANNON.Body({allowSleep: true, sleepSpeedLimit: 75, sleepTimeLimit: this.settleTime, mass: dicemesh.mass, shape: dicemesh.geometry.cannon_shape, material: this.dice_body_material});
 		dicemesh.body.type = CANNON.Body.DYNAMIC;
@@ -1600,10 +1601,11 @@ class DiceBox {
 			const pixel = mesh.diceTheme && mesh.diceTheme.pixel
 			const glows = this.bloomScale > 0 && mesh.diceTheme ? mesh.diceTheme.bloom : 0
 			const mask = pixel ? 1 << PIXEL_LAYER : 1
-			// only the die itself blooms; its children (halo, shells, glass interior) don't write bloom-only light
+			// only the die itself blooms, and children that are all light (energy's lines); the rest (halo, shells,
+			// glass interior) don't write bloom-only light
 			const own = glows ? mask | (1 << BLOOM_LAYER) : mask
 			if (mesh.layers.mask !== own || (mesh.halo && mesh.halo.layers.mask !== mask)) {
-				mesh.traverse(object => { object.layers.mask = mask })
+				mesh.traverse(object => { object.layers.mask = object.blooms ? own : mask })
 				mesh.layers.mask = own
 			}
 			if (glows > bloom) bloom = glows
@@ -1734,6 +1736,7 @@ class DiceBox {
 		if (drifting) {
 			this.DiceFactory.drift_time.value = now / 1000
 			this.DiceFactory.lava_time.value = (now / 1000) % LAVA_PERIOD
+			this.DiceFactory.energy_time.value = (now / 1000) % ENERGY_PERIOD
 			if (!this.dirty && now - this.lastDraw >= 1000 / DRIFT_FPS - 2) this.dirty = true
 		}
 		// choppy pixel dice redraw at their fps while the playback runs at full rate; the last pose always shows

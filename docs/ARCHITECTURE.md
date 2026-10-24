@@ -22,6 +22,7 @@ die land on a value chosen in advance.
 | `src/sparkles.js` | Inner sparkles for glass dice: the point cloud inside a die's hull and its drifting material. |
 | `src/bloom.js` | Bloom for glowing dice: the bloom-only patch, the bloom layer's pass and its premultiplied composite. |
 | `src/lava.js` | The lava texture's flowing, glowing cracks: its two code-drawn textures and its material patch. |
+| `src/energy.js` | The energy material: the glowing line ribbons per die type, their shader and the numbers' patch. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
@@ -312,7 +313,24 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   (the bump canvas inverted, with a coarse mip of it as a halo) or the whole bevel (`NEON_BEVEL`) add emissive light
   in `neonGlow` (rgb the accent, a the strength), plus a white core. Both lava and neon also add their light to
   `diceGlow`. A neon result is the same material with a stronger `neonGlow` and a halo in its colour.
-- **Bloom** (`bloom.js`): a theme's `bloom` (`bloomOf`, never pixel) puts its dice (not their children) on
+- **Energy** (`energy.js`, `DiceFactory.energyMaterial`, `energyMesh`): `material: "energy"` has no body. Its bevel
+  slot is an invisible material (three skips its groups) and each label is a `MeshBasicMaterial`, additive and
+  premultiplied, whose map is the label drawn as white strokes round a faint fill on black (`ink`, in
+  `createTextMaterial`; no bump canvas), patched (`energyNumberShader`) to write only `energyGlow` (rgb the accent,
+  a the strength: `ENERGY.NUMBER`, or `ENERGY.RESULT` in the result's `glowMaterial` variant) with `ENERGY_HOT` a
+  white core, front faces only. Each die gets a child mesh of ribbons (`energyLines`, cached per die type, radius
+  and `energy_faces`): for every face of the `DICE_GEOM` polyhedron, loops inset from its edges (`insetLoop`:
+  each edge's line moved in, corners where neighbours meet) at the bundle's and contours' insets, each loop a strip
+  of quads between the loops a half width either side, with the face normal and `energy` (across -1 to 1, how far
+  round the loop, brightness, a seed). Its `ShaderMaterial` (`energyLinesMaterial`, per theme, plus a dim one for a
+  dropped die) draws a line at least 0.8 px wide by `fwidth` (narrower ones are dimmed to match), a halo, a comet
+  per loop from `energy_time` (advanced with the drift clock modulo `ENERGY_PERIOD`; each loop's rate is a whole
+  number of turns per period), dimmer where the face turns away, and a white core where it is brightest, additive
+  and premultiplied. The child is `blooms`, so `draw` puts it on `BLOOM_LAYER` with the die. The die is
+  `shadowless` (no `castShadow`) and `flows` with `energy_flow`, so the loop keeps drawing at `DRIFT_FPS` after
+  settling, never under reduced motion. Pixel themes draw neon instead.
+- **Bloom** (`bloom.js`): a theme's `bloom` (`bloomOf`, never pixel) puts its dice (not their children, except
+  energy's lines) on
   `BLOOM_LAYER` in `draw` and gives its materials `bloomShader`, which while the shared `bloom_only` uniform is 1
   writes only `diceGlow` (or, without it, the emissive light) at `dithering_fragment`. After the canvas is drawn,
   `DiceBloom.render` draws that layer into a half-float target at `bloomScale` of the drawing buffer (shadow maps
