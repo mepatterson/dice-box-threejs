@@ -38,6 +38,16 @@ export const MATERIALTYPES = {
     clearcoatRoughness: 0.35,
     envMapIntensity: 0.2
   },
+  // a dark glossy body whose edges and numbers glow like neon tubes in the accent (neonShader)
+  'neon': {
+    name: 'Neon',
+    color: 0xffffff,
+    roughness: 0.3,
+    metalness: 0,
+    clearcoat: 0.4,
+    clearcoatRoughness: 0.06,
+    envMapIntensity: 0.2
+  },
   'glass': {
     name: 'Glass',
     color: 0xffffff,

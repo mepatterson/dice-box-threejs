@@ -10,6 +10,7 @@ import {pixelOf, buildPalette, fontFor, paintLabels, rgba, nearestTexture, pixel
 import {GRAINS, COATS, makeRelief} from "./normals.js"
 import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
 import {LAVA_GLOW, lavaTextures, lavaShader} from "./lava.js"
+import {bloomShader} from "./bloom.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -191,6 +192,12 @@ const refractionOf = (options, vector = new THREE.Vector3()) => {
 	return vector.set(o.ior ?? 1.5, on ? (o.strength ?? 1) : 0, o.dispersion === true ? 0.02 : (o.dispersion || 0));
 };
 
+// A colorset's bloom strength (above 0 turns it on), never in the pixel style.
+const bloomOf = colordata => {
+	const bloom = Number(colordata.bloom);
+	return !pixelOf(colordata) && colordata.bloom !== true && Number.isFinite(bloom) && bloom > 0 ? bloom : colordata.bloom === true && !pixelOf(colordata) ? 1 : 0;
+};
+
 const PICKS = ['dice_color_rand', 'label_color_rand', 'label_outline_rand', 'dice_texture_rand', 'dice_material_rand', 'edge_color_rand'];
 
 // Metal reflects the environment tinted by the body colour, so a dark body still reads as metal by
@@ -235,6 +242,35 @@ export const isMetal = material => /metal/.test(material || '');
 // Plastic and wood only reflect the environment; its diffuse light would wash out their colour.
 function dielectricShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''));
+}
+
+// Neon: the body is dark glossy acrylic (its colour at a fifth, reflecting the room but none of its diffuse
+// light), and its edges and numbers are tubes of light in the neon colour: emissive, a white-hot core in
+// the middle of each number (where the bump canvas is darkest) and a soft halo round it (a coarse mip of
+// the same canvas). The bevels glow along their whole width. neonGlow: rgb the colour, a the strength.
+const NEON = { BODY: 0.15, CORE: 0.45, HALO: 0.45, EDGE: 1.0 };
+function neonShader(shader, glow) {
+	shader.uniforms.neonGlow = glow;
+	const consts = Object.entries(NEON).map(([k, v]) => `#define NEON_${k} ${v.toFixed(3)}`).join('\n');
+	shader.fragmentShader = shader.fragmentShader
+		.replace('void main() {', `${consts}\n#ifndef DICE_GLOW\n#define DICE_GLOW\nvec3 diceGlow = vec3( 0.0 );\n#endif\nuniform vec4 neonGlow;\nvoid main() {`)
+		.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''))
+		.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+			{
+				float neonTube = 0.0;
+				float neonHalo = 0.0;
+				#ifdef NEON_BEVEL
+					neonTube = NEON_EDGE;
+				#elif defined( USE_BUMPMAP )
+					float neonInk = 1.0 - texture2D( bumpMap, vBumpMapUv ).r;
+					neonTube = smoothstep( 0.15, 0.85, neonInk );
+					neonHalo = 1.0 - texture2D( bumpMap, vBumpMapUv, 3.5 ).r;
+				#endif
+				diffuseColor.rgb *= mix( NEON_BODY, 0.05, saturate( neonTube ) );
+				vec3 neonLight = neonGlow.rgb * neonGlow.a * ( neonTube + NEON_HALO * neonHalo ) + vec3( NEON_CORE ) * neonGlow.a * pow( saturate( neonTube ), 3.0 );
+				totalEmissiveRadiance += neonLight;
+				diceGlow += neonLight;
+			}`);
 }
 
 // Leather: its relief (the pebble grain) is the normal map, flattened where the bump canvas says number or
@@ -386,6 +422,7 @@ class DiceFactory {
 		this.drift_time = { value: 0 };
 		this.lava_textures = null;
 		this.lava_time = { value: 0 };
+		this.bloom_only = { value: 0 };
 
 		this.material_options = {
 			specular: 0x777777,
@@ -458,7 +495,7 @@ class DiceFactory {
 	makeTheme(key, colordata, fontReady) {
 		const edges = colordata.glass_edges;
 		return {
-			key, colordata, fontReady, pins: 0, pixel: pixelOf(colordata), palette: null, samples: null,
+			key, colordata, fontReady, pins: 0, pixel: pixelOf(colordata), palette: null, samples: null, bloom: bloomOf(colordata),
 			textures: {}, materials: new Map(), glow: new Map(), variants: new Map(), tints: new Map(),
 			edges: edges !== undefined && edges !== null ? { value: clampEdges(edges) } : this.edges,
 			refraction: 'glass_refraction' in colordata ? { value: refractionOf(colordata.glass_refraction) } : this.refraction,
@@ -617,7 +654,9 @@ class DiceFactory {
 			materials[top] = this.glowMaterial(materials[top], null, look);
 		}
 		mesh.material = materials;
-		if (info) this.addHalo(mesh, fill || this.glowColor(info.forecolor).color, intensity, style);
+		const neon = mesh.baseMaterial[mesh.shape == 'd4' ? 2 : top].neonGlow;
+		const halo = neon ? `#${new THREE.Color(neon.value.x, neon.value.y, neon.value.z).getHexString()}` : fill || (info && this.glowColor(info.forecolor).color);
+		if (info) this.addHalo(mesh, halo, intensity, neon ? 'glow' : style);
 		return style;
 	}
 
@@ -872,6 +911,7 @@ class DiceFactory {
 		mat.fuzz = base.fuzz;
 		mat.fuzzDim = base.fuzzDim;
 		mat.lavaUniforms = base.lavaUniforms;
+		mat.neonGlow = base.neonGlow;
 		return mat;
 	}
 
@@ -884,6 +924,13 @@ class DiceFactory {
 		let mat = glows.get(key);
 		if (mat) return mat;
 		mat = this.cloneMaterial(base);
+		if (base.neonGlow) {
+			// a neon number is already light: the result's tubes burn brighter instead of drawing a second glow
+			const glow = base.neonGlow.value;
+			mat.neonGlow = { value: glow.clone().setW(glow.w * (1 + 0.4 * intensity)) };
+			glows.set(key, mat);
+			return mat;
+		}
 		mat.emissive = new THREE.Color(0xffffff);
 		mat.emissiveIntensity = intensity;
 		if (fill) {
@@ -1191,6 +1238,7 @@ class DiceFactory {
 			}
 
 			if (this.dice_material == 'none' || this.dice_material == 'wood') mat.onBeforeCompile = dielectricShader;
+			if (this.dice_material == 'neon') this.addNeon(mat, i == 0);
 
 			let canvasTextures;
 			if (i==0) { //edge
@@ -1252,6 +1300,7 @@ class DiceFactory {
 			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
 			if (this.dice_texture_rand.lava) this.addLava(mat);
 			if (this.dice_texture_rand.relief && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'wood')) this.addLeather(mat, this.dice_texture_rand.relief);
+			if (this.theme && this.theme.bloom) this.addBloom(mat);
 			if (!this.pixel) {
 				if (this.dice_grain && isMetal(this.dice_material)) this.addGrain(mat, this.dice_grain);
 				if (this.dice_coat && mat.clearcoat > 0) this.addCoat(mat, this.dice_coat);
@@ -1330,6 +1379,28 @@ class DiceFactory {
 		mat.onBeforeCompile = function (shader, renderer) {
 			glintShader(shader, this.glintMap, glintState);
 			compile.call(this, shader, renderer);
+		};
+	}
+
+	// Neon (neonShader): the glow in the accent, or else the numbers' colour; the bevels glow whole.
+	addNeon(mat, bevel) {
+		const color = new THREE.Color(this.dice_accent || this.label_color_rand || '#ff3df2');
+		mat.neonGlow = { value: new THREE.Vector4(color.r, color.g, color.b, 1.6) };
+		if (bevel) mat.defines = { ...mat.defines, NEON_BEVEL: '' };
+		mat.defines = { ...mat.defines, DICE_NEON: '' };
+		mat.onBeforeCompile = function (shader) {
+			neonShader(shader, this.neonGlow);
+		};
+	}
+
+	// Bloom (bloom.js): while the box draws its bloom layer the material writes only its emissive light.
+	addBloom(mat) {
+		const compile = mat.onBeforeCompile;
+		const only = this.bloom_only;
+		mat.defines = { ...mat.defines, DICE_BLOOM: '' };
+		mat.onBeforeCompile = function (shader, renderer) {
+			compile.call(this, shader, renderer);
+			bloomShader(shader, only);
 		};
 	}
 

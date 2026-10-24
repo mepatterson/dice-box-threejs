@@ -126,7 +126,11 @@ export function lavaShader(shader, uniforms) {
 	shader.uniforms.lavaColor = uniforms.color
 	shader.uniforms.lavaStrength = uniforms.strength
 	shader.fragmentShader = shader.fragmentShader
-		.replace('void main() {', `uniform sampler2D lavaCloud;
+		.replace('void main() {', `#ifndef DICE_GLOW
+			#define DICE_GLOW
+			vec3 diceGlow = vec3( 0.0 );
+			#endif
+			uniform sampler2D lavaCloud;
 			uniform sampler2D lavaCracks;
 			uniform float lavaTime;
 			uniform vec3 lavaColor;
@@ -154,5 +158,6 @@ export function lavaShader(shader, uniforms) {
 					lavaGlow *= 0.3;
 				#endif
 				totalEmissiveRadiance += lavaGlow * lavaStrength;
+				diceGlow += lavaGlow * lavaStrength;
 			}`)
 }

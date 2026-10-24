@@ -85,6 +85,26 @@ towards the edges. Stock colorsets keep their colours; they gain that gloss and 
 little darker than the old fully matte finish. Wood without a texture gets a wood grain drawn in its
 body colour and a satin varnish, so it is told apart from plastic at a glance.
 
+### Neon and bloom
+`material: "neon"` is dark glossy acrylic (the body colour at a fifth) whose edges and numbers are tubes of
+light in the colorset's `accent` (or the number colour): emissive, with a white-hot core in each number and
+a soft halo round it, so they glow on any page without any light. The result highlight burns a neon number
+brighter instead of drawing a second glow over it.
+
+A colorset's `bloom` (a strength, 1 the usual; 0 or left out for none) makes what glows on its dice bloom:
+lava's cracks, neon tubes, and on other textures the result glow. Only those dice are drawn again, writing
+nothing but their own glow, into a small half-float target that three's `UnrealBloomPass` blurs, and the
+blur is laid over the canvas as premultiplied light whose opacity is its brightness (at most 0.65, so a
+number under its glow stays crisp). Over the page it reads as glow in its own colour, with no dark fringe
+and no box. Pixel dice never bloom.
+```
+theme_customColorset: { name: "hyper", foreground: "#ffffff", background: "#1a1030", outline: "none", material: "neon", accent: "#ff2bd6", bloom: 1 }
+```
+The box's `bloom` option sets what it costs: `"auto"` (the default) draws it at half the canvas's resolution on
+a desktop, 0.4 on a tablet and 0.3 on a phone, and while dice roll with bloom it lowers that by 40% each time
+30 frames run at a median over 34 ms, down to 0.12 of the canvas, then turns bloom off for the box (and says
+so in the console). A number (0 to 1) sets the share and never adapts; `false` leaves bloom off.
+
 ### Procedural textures
 Eight textures are generated in code instead of loaded from `public/textures`, so they need no asset
 files. Each is drawn in the colorset's own colours, with a finish to match:

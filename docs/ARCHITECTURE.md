@@ -20,6 +20,7 @@ die land on a value chosen in advance.
 | `src/fuzz.js` | Fur shells for fuzzy textures: the strand field, shell geometry and shell material. |
 | `src/normals.js` | Procedural normal maps: the metal grains (brushed, hammered, worn) and the coats (scratched, flake, weave). |
 | `src/sparkles.js` | Inner sparkles for glass dice: the point cloud inside a die's hull and its drifting material. |
+| `src/bloom.js` | Bloom for glowing dice: the bloom-only patch, the bloom layer's pass and its premultiplied composite. |
 | `src/lava.js` | The lava texture's flowing, glowing cracks: its two code-drawn textures and its material patch. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
@@ -291,6 +292,20 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   `DiceBox.frame` advances the clock and keeps requesting frames while any die on the table drifts
   (`drifting`), drawing at `DRIFT_FPS` once nothing else moves, never under `prefers-reduced-motion`
   (`still`). Clouds and the dot are freed in `dispose()`.
+- **Neon** (`neonShader`, `DiceFactory.addNeon`): `material: "neon"` is a `MeshPhysicalMaterial` with a light
+  clear coat and no diffuse environment light; after `emissivemap_fragment` the body is darkened and the numbers
+  (the bump canvas inverted, with a coarse mip of it as a halo) or the whole bevel (`NEON_BEVEL`) add emissive light
+  in `neonGlow` (rgb the accent, a the strength), plus a white core. Both lava and neon also add their light to
+  `diceGlow`. A neon result is the same material with a stronger `neonGlow` and a halo in its colour.
+- **Bloom** (`bloom.js`): a theme's `bloom` (`bloomOf`, never pixel) puts its dice (not their children) on
+  `BLOOM_LAYER` in `draw` and gives its materials `bloomShader`, which while the shared `bloom_only` uniform is 1
+  writes only `diceGlow` (or, without it, the emissive light) at `dithering_fragment`. After the canvas is drawn,
+  `DiceBloom.render` draws that layer into a half-float target at `bloomScale` of the drawing buffer (shadow maps
+  not updated), runs `UnrealBloomPass` on it (its blend onto the source is unused; its widest mip is dropped), and
+  draws `renderTargetsHorizontal[0]` over the canvas with premultiplied over blending: alpha the glow's brightest
+  channel, capped, with a grain of noise against banding, colour its hue in sRGB times alpha. `watchBloom` lowers
+  `bloomScale` ("auto") while rolling frames run slow. `preloadTheme` also compiles a bloom theme's programs for that
+  target.
 - **Leather**: the `leather` surface is only a dyed tone; its texture entry names a `relief` (`pebble` in
   normals.js, a wrapped Voronoi of rounded pebbles), which `addLeather` sets as the normal and roughness map on
   plastic or wood (not in the pixel style). `leatherShader` flattens the normal where the bump canvas is dark (numbers,

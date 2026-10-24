@@ -13,6 +13,7 @@ import { THEMES } from './const/themes.js';
 import { MATERIALTYPES } from './const/materialtypes.js';
 import { MAX_SHELLS } from './fuzz.js';
 import { PixelPass, PIXEL_LAYER } from './pixel.js';
+import { DiceBloom, BLOOM_LAYER, BLOOM_SCALES, BLOOM_LEAST } from './bloom.js';
 // import CannonDebugger from 'cannon-es-debugger'
 
 import { debounce } from "./helpers"
@@ -67,6 +68,9 @@ const defaultConfig = {
 	// Inner sparkles in glass dice whose colorset asks for them (`inner`): "auto" picks how many by device, a
 	// number sets it, false leaves them out. See README.
 	sparkles: "auto",
+	// Bloom for colorsets that ask for it (`bloom`): "auto" picks its resolution by device (and lowers it, then
+	// turns it off, if it slows the frames down), a number sets its share of the canvas, false leaves it off.
+	bloom: "auto",
 	preloadDice: null,
 	themeCache: 8,
 	onRollComplete: () => {},
@@ -165,6 +169,17 @@ function innerBudget(sparkles) {
 	return INNER_BUDGETS[deviceClass()]
 }
 
+// Bloom's share of the canvas: by device for "auto", a number as given, 0 for none.
+function bloomScale(bloom) {
+	if (bloom === false) return 0
+	if (Number(bloom) > 0) return Math.min(1, Number(bloom))
+	return BLOOM_SCALES[deviceClass()]
+}
+// While dice roll with bloom on, a median frame gap over SLOW_FRAME ms across BLOOM_SAMPLES frames lowers
+// bloom's resolution, down to BLOOM_LEAST and then off ("auto" only).
+const SLOW_FRAME = 34
+const BLOOM_SAMPLES = 30
+
 const reducedMotion = () => typeof matchMedia == "function" && matchMedia("(prefers-reduced-motion: reduce)").matches
 
 const materialOf = colordata => {
@@ -262,6 +277,9 @@ class DiceBox {
 		this.boxResolved = null
 		this.boxTheme = null
 		this.pixelPass = null
+		this.bloomPass = null
+		this.bloomGaps = []
+		this.bloomed = false
 		this.lastDraw = 0
 		this.dirty = false
 
@@ -304,6 +322,7 @@ class DiceBox {
 		this.DiceFactory.setBumpMapping(true);
 		this.applyFuzz();
 		this.DiceFactory.innerCount = innerBudget(this.sparkles);
+		this.bloomScale = bloomScale(this.bloom);
 		this.still = reducedMotion();
 		this.scene.onBeforeRender = () => this.updateFuzz();
 		this.DiceFactory.setRefraction(this.glass_refraction);
@@ -424,6 +443,12 @@ class DiceBox {
 			try {
 				if (this.renderer.extensions.has("KHR_parallel_shader_compile")) compiling = this.renderer.compileAsync(group, this.camera, this.scene)
 				else this.renderer.compile(group, this.camera, this.scene)
+				// glowing dice draw into the bloom target too, whose programs differ from the canvas's
+				if (theme.bloom && this.bloomScale > 0) {
+					this.renderer.setRenderTarget(this.bloomer().target)
+					const bloomCompiling = this.renderer.compileAsync ? this.renderer.compileAsync(group, this.camera, this.scene) : null
+					compiling = Promise.all([compiling, bloomCompiling])
+				}
 			} finally {
 				this.renderer.setRenderTarget(previous)
 			}
@@ -799,6 +824,12 @@ class DiceBox {
 		if ("fuzz" in options) {
 			this.fuzz = options.fuzz
 			this.applyFuzz()
+			if (this.renderer && !this.rolling) this.draw()
+		}
+		if ("bloom" in options) {
+			this.bloom = options.bloom
+			this.bloomScale = bloomScale(options.bloom)
+			this.bloomGaps = []
 			if (this.renderer && !this.rolling) this.draw()
 		}
 		if ("sparkles" in options) {
@@ -1551,19 +1582,29 @@ class DiceBox {
 	draw() {
 		this.dirty = false
 		let classic = false
+		let bloom = 0
 		const themes = []
 		const stamped = []
 		for (const mesh of this.diceList) {
 			if (!mesh.parent) continue
 			const pixel = mesh.diceTheme && mesh.diceTheme.pixel
+			const glows = this.bloomScale > 0 && mesh.diceTheme ? mesh.diceTheme.bloom : 0
 			const mask = pixel ? 1 << PIXEL_LAYER : 1
-			if (mesh.layers.mask !== mask || (mesh.halo && mesh.halo.layers.mask !== mask)) mesh.traverse(object => { object.layers.mask = mask })
+			// only the die itself blooms; its children (halo, shells, glass interior) don't write bloom-only light
+			const own = glows ? mask | (1 << BLOOM_LAYER) : mask
+			if (mesh.layers.mask !== own || (mesh.halo && mesh.halo.layers.mask !== mask)) {
+				mesh.traverse(object => { object.layers.mask = mask })
+				mesh.layers.mask = own
+			}
+			if (glows > bloom) bloom = glows
 			if (!pixel) classic = true
 			else if (!themes.includes(mesh.diceTheme)) themes.push(mesh.diceTheme)
 			if (pixel && mesh.stamp) stamped.push(mesh)
 		}
+		this.bloomed = bloom > 0
 		if (!themes.length) {
 			this.renderer.render(this.scene, this.camera)
+			if (bloom) this.drawBloom(bloom)
 			return
 		}
 		const pass = this.pixels()
@@ -1581,6 +1622,29 @@ class DiceBox {
 		} finally {
 			this.camera.layers.set(0)
 		}
+		if (bloom) this.drawBloom(bloom)
+	}
+
+	// The glowing dice's bloom (bloom.js), over the canvas.
+	drawBloom(strength) {
+		this.bloomer().render(this.renderer, this.scene, this.camera, { scale: this.bloomScale, strength, only: this.DiceFactory.bloom_only })
+	}
+
+	bloomer() {
+		if (!this.bloomPass) this.bloomPass = new DiceBloom()
+		return this.bloomPass
+	}
+
+	// "auto" bloom watches the frames of rolling dice and lowers its resolution, then stops, if they run slow.
+	watchBloom(gap) {
+		if (this.bloom !== "auto" || !this.bloomed || this.bloomScale <= 0) return
+		this.bloomGaps.push(gap)
+		if (this.bloomGaps.length < BLOOM_SAMPLES) return
+		const median = this.bloomGaps.sort((a, b) => a - b)[Math.floor(this.bloomGaps.length / 2)]
+		this.bloomGaps = []
+		if (median <= SLOW_FRAME) return
+		this.bloomScale = this.bloomScale * 0.6 < BLOOM_LEAST ? 0 : this.bloomScale * 0.6
+		console.info(this.bloomScale ? `Dice bloom lowered to ${this.bloomScale.toFixed(2)} of the canvas` : "Dice bloom turned off: too slow on this device")
 	}
 
 	pixels() {
@@ -1617,6 +1681,8 @@ class DiceBox {
 	frame(now) {
 		this.frameRequested = false
 		if (this.disposed) return
+		if (this.throws.length && this.lastFrame) this.watchBloom(now - this.lastFrame)
+		this.lastFrame = this.throws.length ? now : 0
 		const step = this.clockStep()
 		let changed = false
 		const finished = []
@@ -1894,6 +1960,7 @@ class DiceBox {
 			this.desk.material.dispose();
 		}
 		if (this.pixelPass) this.pixelPass.dispose();
+		if (this.bloomPass) this.bloomPass.dispose();
 		this.pixelPass = null;
 		this.renderer.dispose();
 		this.renderer.forceContextLoss();
