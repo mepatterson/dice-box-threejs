@@ -186,6 +186,7 @@ over 350 ms. `{ glow: false }` or
 A glow is lost on dark numbers (dark ink on ivory or wood), so `style` picks how the number lights up:
 - `"glow"`: the number glows in its own colour, as above (a dark number gets a light halo).
 - `"ink"`: the number is repainted in a bright colour that glows, with a soft tint behind it.
+- `"white"`: ink in plain white, whatever the colorset's `highlight` or `color` says.
 - `"gilded"`: the number is repainted in antique gold and a shimmer sweeps across it once (800 ms).
 - `"auto"` (the default): `"ink"` for dark numbers, `"glow"` for the rest.
 

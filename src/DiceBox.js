@@ -1616,12 +1616,12 @@ class DiceBox {
 	}
 
 	// highlightResult: true | { glow: true | number (emissive intensity), pop: true,
-	//   style: "auto" | "glow" | "ink" | "gilded", color: fill colour for ink and gilded }
+	//   style: "auto" | "glow" | "ink" | "white" | "gilded", color: fill colour for ink and gilded }
 	highlightOptions(option = this.highlightResult) {
 		if (!option) return { glow: 0, pop: false }
 		const glow = option === true || option.glow === undefined ? true : option.glow
 		const pop = option === true || option.pop === undefined ? true : option.pop
-		const style = ["glow", "ink", "gilded"].includes(option.style) ? option.style : "auto"
+		const style = ["glow", "ink", "white", "gilded"].includes(option.style) ? option.style : "auto"
 		return { glow: glow === true ? 1 : Number(glow) || 0, pop: Boolean(pop), style, color: option.color || null }
 	}
 

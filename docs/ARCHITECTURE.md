@@ -266,8 +266,8 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   emissive map of just the number haloed in its colour, cached per material in `glow_cache` and
   freed in `dispose()`, and adds a `Sprite` child just above the up face (on a d4, over the top
   corner): additive, with one shared radial-gradient texture and a material per colour
-  (`halo_cache`), so it is one extra draw per die and costs no per-die GPU memory. With `style` ink or
-  gilded (auto picks ink when `glowColor` finds the number dark) the variant also gets the label redrawn
+  (`halo_cache`), so it is one extra draw per die and costs no per-die GPU memory. With `style` ink, white
+  or gilded (auto picks ink when `glowColor` finds the number dark) the variant also gets the label redrawn
   with the number in the fill colour (not on a d4, where the emissive number alone recolours it), the
   emissive map is drawn in that colour, and the halo is a normally blended tint, since an additive one
   vanishes on a light body. Gilded adds `gildMaterial`, an `onBeforeCompile` patch that brightens a

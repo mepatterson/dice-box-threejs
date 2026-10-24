@@ -17,6 +17,8 @@ const SHAPED_CACHE = 24;
 const PIXEL_UNIT = 4;
 // The ring around a highlighted pixel stamp.
 const PIXEL_INK = '#140c08';
+// The "white" highlight's number.
+const WHITE_INK = '#FFFFFF';
 // A dropped pixel die's number, darkened like dimShader does its body.
 const dimColor = color => `#${new THREE.Color(color).multiplyScalar(0.6).getHexString()}`;
 
@@ -510,15 +512,16 @@ class DiceFactory {
 	// that emits a soft halo in the number colour, and a small additive glow sprite sits just above
 	// the number. Only what is drawn changes; the face map and so the reported result stay as they were.
 	// style: "glow" lights the number in its own colour; "ink" repaints a dark number in a bright
-	// colour (`color`, the colorset's `highlight`, or ember) that glows; "gilded" repaints it in gold
-	// with a shimmer that sweeps across once (`gild_sweep`, driven by the box). "auto" picks ink for dark
-	// numbers and glow for the rest. Returns the style used.
+	// colour (`color`, the colorset's `highlight`, or ember) that glows; "white" is ink in plain white,
+	// whatever the colorset says; "gilded" repaints it in gold with a shimmer that sweeps across once
+	// (`gild_sweep`, driven by the box). "auto" picks ink for dark numbers and glow for the rest.
+	// Returns the style used.
 	glowResult(mesh, intensity = 1, style = 'auto', color = null) {
 		this.unglow(mesh);
 		const top = this.topFace(mesh).materialIndex;
 		const info = mesh.material[mesh.shape == 'd4' ? 2 : top].diceLabel;
 		if (style == 'auto') style = info && this.glowColor(info.forecolor).dark ? 'ink' : 'glow';
-		const fill = style == 'glow' || !info ? null : color || info.highlight || (style == 'gilded' ? '#B8892E' : '#F2743B');
+		const fill = style == 'glow' || !info ? null : style == 'white' ? WHITE_INK : color || info.highlight || (style == 'gilded' ? '#B8892E' : '#F2743B');
 		const look = { intensity, style, fill };
 		if (mesh.diceTheme && mesh.diceTheme.pixel && info) {
 			this.stampResult(mesh, { fill: fill || this.glowColor(info.forecolor).color, ring: PIXEL_INK });
@@ -663,7 +666,7 @@ class DiceFactory {
 
 	// The halo sits just above the up face (on a d4, over the top corner) as a child of the mesh, so
 	// it pops with the die and goes when the die does.
-	// An additive glow vanishes on a light body, so the ink and gilded halos are a soft tint instead.
+	// An additive glow vanishes on a light body, so the ink, white and gilded halos are a soft tint instead.
 	addHalo(mesh, color, intensity, style = 'glow') {
 		if (!this.halo_texture) this.halo_texture = haloTexture();
 		const tinted = style != 'glow';
