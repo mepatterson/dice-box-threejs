@@ -126,6 +126,12 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   no accent) is moss, a red accent grows red moss, and a grey one grey. Nothing keeps the colours
   readable against the body or the numbers; a very light or very dark accent pushes the ramp to white
   or black.
+- `lava`: dark rock with molten cracks that glow and flow, after three.js's lava shader example. The
+  body colour is darkened into a mottled basalt crust, and two textures drawn in code scroll against each
+  other over it: where they line up the rock melts into cracks and pools in the colorset's `accent` (ember
+  without one), white-hot where it runs hottest. The cracks are emissive, so they glow without light. They
+  flow while the dice tumble and keep flowing at 30 fps once they settle, like inner sparkles, and hold
+  still under `prefers-reduced-motion`. The numbers stay rock; light numbers read best.
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }

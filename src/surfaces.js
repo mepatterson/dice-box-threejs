@@ -440,6 +440,20 @@ function growth(size, options) {
 	return moss(size, options, MOSS_GREENS.map(({ color }) => ({ color: 'accent', shade: color })));
 }
 
+// Basalt for lava: the body colour darkened into a mottled crust, with pores and a coarse grit, rough to
+// the touch. The molten cracks are drawn by the lava shader (lava.js), which flows over this.
+function lava(size) {
+	const n1 = valueNoise(91), n2 = valueNoise(92, 128), n3 = valueNoise(93, 128);
+	return build(size, [{ color: '#000000' }, { color: '#ffffff' }], 0.5, (u, v, o) => {
+		const crust = fbm(n1, u * 3, v * 3, 4);
+		const grit = fbm(n2, u * 60, v * 60, 2);
+		const pore = smoothstep(0.8, 0.92, n3(u * 140, v * 140));
+		o.masks[0] = 0.45 + 0.3 * smoothstep(0.35, 0.75, crust) + 0.15 * grit + 0.1 * pore;
+		o.masks[1] = 0.06 * smoothstep(0.6, 0.85, grit) * (1 - pore);
+		o.height = 0.7 + 0.2 * crust + 0.1 * grit - 0.35 * pore;
+	});
+}
+
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
 // no texture.
 export function woodGrain(size = 256) {
@@ -465,7 +479,7 @@ export function woodGrain(size = 256) {
 	return canvasFrom(size, [field]);
 }
 
-const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth };
+const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth, lava };
 
 export function makeSurface(name, size = 512, options = {}) {
 	const generate = GENERATORS[name];

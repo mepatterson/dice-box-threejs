@@ -291,6 +291,16 @@ export const TEXTURELIST = {
 		fuzz: MOSS_FUZZ,
 		shades: true
 	},
+	// dark rock with glowing cracks that flow (lava.js), in the colorset's accent or ember
+	'lava': {
+		name: 'Lava',
+		surface: 'lava',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		lava: true,
+		finish: { roughness: 0.85, clearcoat: 0.15, clearcoatRoughness: 0.5, envMapIntensity: 0.12 }
+	},
 	'none': {
 		name: 'none',
 		composite: 'source-over',

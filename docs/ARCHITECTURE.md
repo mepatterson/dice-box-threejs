@@ -20,6 +20,7 @@ die land on a value chosen in advance.
 | `src/fuzz.js` | Fur shells for fuzzy textures: the strand field, shell geometry and shell material. |
 | `src/normals.js` | Procedural normal maps: the metal grains (brushed, hammered, worn) and the coats (scratched, flake, weave). |
 | `src/sparkles.js` | Inner sparkles for glass dice: the point cloud inside a die's hull and its drifting material. |
+| `src/lava.js` | The lava texture's flowing, glowing cracks: its two code-drawn textures and its material patch. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
 
@@ -290,6 +291,14 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   `DiceBox.frame` advances the clock and keeps requesting frames while any die on the table drifts
   (`drifting`), drawing at `DRIFT_FPS` once nothing else moves, never under `prefers-reduced-motion`
   (`still`). Clouds and the dot are freed in `dispose()`.
+- **Lava** (`lava.js`, `DiceFactory.addLava`): the `lava` texture draws a dark basalt label (`surfaces.js`) and
+  gets an `onBeforeCompile` patch (`DICE_LAVA`) after `emissivemap_fragment`: two tiling textures drawn once per
+  box (`lavaTextures`: a four-channel cloud noise, 128px, and a Voronoi crack field, 256px) scroll against each
+  other at the label UV, as in three's webgl_shader_lava, and where they line up the label darkens and adds an
+  emissive glow in the accent (or `LAVA_GLOW`), white-hot past 1, kept off the numbers by the bump canvas (or the
+  metal paint mask). Its clock is `lava_time`, advanced with the drift clock modulo `LAVA_PERIOD`, the span both
+  textures tile over, so it stays small for mediump phones; the die is `flows`, so `drifts` keeps the loop at
+  `DRIFT_FPS` after the dice settle, never under reduced motion. A dimmed die (`LAVA_DIM`) glows at 30%.
 - **Bump canvases** upload as one channel (`RedFormat`, a quarter of the bytes): the bump height and
   the metal paint mask only need red. Labels with glitter flecks keep RGBA, since the flecks' glint and
   tilt live in the other channels. Glass without flecks never samples that canvas, so it gets no texture.

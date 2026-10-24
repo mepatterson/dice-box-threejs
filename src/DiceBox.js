@@ -6,6 +6,7 @@ import { DiceFactory, isMetal } from './DiceFactory.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { INNER_BUDGETS } from './sparkles.js';
+import { LAVA_PERIOD } from './lava.js';
 import { DiceColors } from './DiceColors.js';
 import { fontOf, loadFont } from './fonts.js';
 import { THEMES } from './const/themes.js';
@@ -1652,10 +1653,11 @@ class DiceBox {
 		if (this.animatePops(now)) changed = true
 		this.applyPixelRatio()
 		if (changed || finished.length) this.dirty = true
-		// inner sparkles keep drifting once the dice have settled, at a gentler rate than the playback
+		// inner sparkles keep drifting and lava flowing once the dice have settled, at a gentler rate than the playback
 		const drifting = this.drifting()
 		if (drifting) {
 			this.DiceFactory.drift_time.value = now / 1000
+			this.DiceFactory.lava_time.value = (now / 1000) % LAVA_PERIOD
 			if (!this.dirty && now - this.lastDraw >= 1000 / DRIFT_FPS - 2) this.dirty = true
 		}
 		// choppy pixel dice redraw at their fps while the playback runs at full rate; the last pose always shows
@@ -1667,7 +1669,7 @@ class DiceBox {
 		if (this.throws.length || this.popping() || this.dirty || drifting) this.requestFrame()
 	}
 
-	// Whether any die on the table has inner sparkles to keep moving (never under reduced motion).
+	// Whether any die on the table has inner sparkles or lava to keep moving (never under reduced motion).
 	drifting() {
 		return !this.still && this.DiceFactory.drifts(this.diceList)
 	}

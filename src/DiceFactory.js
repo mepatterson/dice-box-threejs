@@ -9,6 +9,7 @@ import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} fr
 import {pixelOf, buildPalette, fontFor, paintLabels, rgba, nearestTexture, pixelShader} from "./pixel.js"
 import {GRAINS, COATS, makeRelief} from "./normals.js"
 import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
+import {LAVA_GLOW, lavaTextures, lavaShader} from "./lava.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -346,6 +347,8 @@ class DiceFactory {
 		this.innerCount = INNER_BUDGETS.desktop;
 		this.dot_texture = null;
 		this.drift_time = { value: 0 };
+		this.lava_textures = null;
+		this.lava_time = { value: 0 };
 
 		this.material_options = {
 			specular: 0x777777,
@@ -386,6 +389,8 @@ class DiceFactory {
 		this.inner_clouds = new Map();
 		if (this.dot_texture) this.dot_texture.dispose();
 		this.dot_texture = null;
+		if (this.lava_textures) Object.values(this.lava_textures).forEach(texture => texture.dispose());
+		this.lava_textures = null;
 		this.shell_sets = new WeakMap();
 		this.geometries = {};
 		this.themes = new Map();
@@ -787,6 +792,7 @@ class DiceFactory {
 		};
 		mat.customProgramCacheKey = () => `${base.customProgramCacheKey()}|dim`;
 		if (mat.isGlass) mat.defines.DICE_DIM = '';
+		if (mat.lavaUniforms) mat.defines.LAVA_DIM = '';
 		mat.fuzzDim = true;
 		variants.set(key, mat);
 		return mat;
@@ -828,6 +834,7 @@ class DiceFactory {
 		mat.fuzzMap = base.fuzzMap;
 		mat.fuzz = base.fuzz;
 		mat.fuzzDim = base.fuzzDim;
+		mat.lavaUniforms = base.lavaUniforms;
 		return mat;
 	}
 
@@ -898,6 +905,7 @@ class DiceFactory {
 		if (inner) dicemesh.add(inner);
 		dicemesh.interior = interior;
 		dicemesh.inner = inner;
+		dicemesh.flows = dicemesh.material.some(mat => mat.lavaUniforms);
 		dicemesh.result = [];
 		dicemesh.shape = diceobj.shape;
 		dicemesh.rerolls = 0;
@@ -1000,9 +1008,9 @@ class DiceFactory {
 		return mat;
 	}
 
-	// Whether any die in `meshes` has inner sparkles to drift.
+	// Whether any die in `meshes` has inner sparkles to drift or lava to flow.
 	drifts(meshes) {
-		return meshes.some(mesh => mesh.inner && mesh.parent);
+		return meshes.some(mesh => (mesh.inner || mesh.flows) && mesh.parent);
 	}
 
 	// A die whose texture grows fuzz gets its fur shells (fuzz.js) as a child, so they follow its pose
@@ -1205,6 +1213,7 @@ class DiceFactory {
 			}
 			const surface = this.dice_texture_rand.surface && this.surface(this.dice_texture_rand.surface);
 			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
+			if (this.dice_texture_rand.lava) this.addLava(mat);
 			if (!this.pixel) {
 				if (this.dice_grain && isMetal(this.dice_material)) this.addGrain(mat, this.dice_grain);
 				if (this.dice_coat && mat.clearcoat > 0) this.addCoat(mat, this.dice_coat);
@@ -1283,6 +1292,24 @@ class DiceFactory {
 		mat.onBeforeCompile = function (shader, renderer) {
 			glintShader(shader, this.glintMap, glintState);
 			compile.call(this, shader, renderer);
+		};
+	}
+
+	// Lava (lava.js): molten cracks flowing over the label on the box's lava clock, glowing in the accent.
+	addLava(mat) {
+		if (!this.lava_textures) this.lava_textures = lavaTextures();
+		const compile = mat.onBeforeCompile;
+		mat.lavaUniforms = {
+			cloud: { value: this.lava_textures.cloud },
+			cracks: { value: this.lava_textures.cracks },
+			time: this.lava_time,
+			color: { value: new THREE.Color(this.dice_accent || LAVA_GLOW) },
+			strength: { value: 1 },
+		};
+		mat.defines = { ...mat.defines, DICE_LAVA: '' };
+		mat.onBeforeCompile = function (shader, renderer) {
+			compile.call(this, shader, renderer);
+			lavaShader(shader, this.lavaUniforms);
 		};
 	}
 
