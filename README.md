@@ -344,7 +344,7 @@ box.roll("1d20@20", { flourish: "crit" })
 Every particle lives in one shared pool: the box's `particles` caps how many are alive at once (`"auto"`: 700 on a
 desktop, 450 on a tablet, 260 on a phone; a number; `false` for none), and a burst or trail that would pass it is cut
 short, so a big roll can't flood a phone. They are simulated on the CPU (a few hundred at most) and drawn as one point
-sprite draw under the dice, none living past about a second, so a table at rest draws nothing. Under
+sprite draw under the dice, none living past about a second, so a table at rest draws nothing. The exception is a splash's splotches: flat ragged blots in the liquid's colour left on the table, sized by the impact, that hold and fade over 4 to 6 seconds (at most 30% of the pool, the oldest going first), redrawn about 6 times a second while only they are left, and gone from the loop once they have faded. Under
 `prefers-reduced-motion` they appear and fade where they are, without moving. Pixel dice don't shed.
 
 ### Glass refraction
