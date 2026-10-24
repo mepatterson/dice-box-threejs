@@ -405,8 +405,9 @@ pixel: { size: 40, palette: "auto", dither: 0.35, bands: 3, outline: "auto", fps
 - **Palette.** A post pass snaps every pixel to a palette, with ordered (4x4 Bayer) dithering between the
   two nearest colours; `dither` 0 picks the nearest colour only. `"auto"` builds the palette from the
   colorset's colours and the colours its labels show (median cut), each with a short ramp of shades, plus
-  the highlight colours and a near black and white. A list of CSS colours is used as given (up to 64), a
-  number n is n levels per channel (at most 4), and `false` keeps the rendered colours. Glass is dithered
+  a near black and white. A list of CSS colours is used as given (up to 64), a number n is n levels per
+  channel (at most 4), and `false` keeps the rendered colours. Result stamps keep their own colours, unless
+  the palette is a list. Glass is dithered
   into a few steps of opacity and shadows into a dithered dark.
 - **Flat shading.** Direct light falls in `bands` steps (0 for smooth) and highlights are flat spots in a
   few levels, so each face reads as one facet. Metal, glass, wood and the textures keep their own materials.

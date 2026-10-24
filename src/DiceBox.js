@@ -1499,7 +1499,8 @@ class DiceBox {
 		}
 		const pass = this.pixels()
 		const { size, dither, outline } = themes[0].pixel
-		pass.setLook({ palettes: themes.map(theme => this.DiceFactory.pixelPalette(theme)), dither, outline, shadowAlpha: this.desk ? this.desk.material.opacity : SHADOW_OPACITY })
+		pass.setLook({ palettes: themes.map(theme => this.DiceFactory.pixelPalette(theme)), dither, outline, strict: themes.every(theme => Array.isArray(theme.pixel.palette)),
+			shadowAlpha: this.desk ? this.desk.material.opacity : SHADOW_OPACITY })
 		if (classic) this.renderer.render(this.scene, this.camera)
 		else {
 			this.renderer.setRenderTarget(null)

@@ -118,7 +118,7 @@ function addColor(list, rgb, closest = SPACING) {
 // and the colours its labels actually show (`samples`, sRGB 0 to 1, from its first label), each with a
 // short ramp, plus a near black and a near white. A list of colours is used as given, a number n is n
 // levels per channel, and false leaves the colours as rendered.
-export function buildPalette(option, colordata, samples = [], highlights = []) {
+export function buildPalette(option, colordata, samples = []) {
 	if (option === false || option === "none") return []
 	const list = []
 	if (Array.isArray(option)) {
@@ -140,8 +140,6 @@ export function buildPalette(option, colordata, samples = [], highlights = []) {
 	label.forEach(c => ramp(rgbOf(c), [-0.12, 0, 0.1]).forEach(rgb => addColor(list, rgb)))
 	accent.forEach(c => ramp(rgbOf(c), [-0.2, -0.08, 0, 0.1]).forEach(rgb => addColor(list, rgb)))
 	outline.forEach(c => addColor(list, rgbOf(c)))
-	// the result highlight repaints or lights the number in these
-	highlights.forEach(c => ramp(rgbOf(c), [-0.1, 0, 0.12]).forEach(rgb => addColor(list, rgb)))
 	if (samples.length) medianCut(samples, 6).forEach(rgb => ramp(rgb, [-0.16, 0, 0.12]).forEach(c => addColor(list, c, SPACING)))
 	const [L, a, b] = oklab(rgbOf(body[0] || "#808080"))
 	const C = Math.hypot(a, b)
@@ -532,8 +530,10 @@ export class PixelPass {
 		this.scale = 1
 	}
 
-	// palettes: [{ rgb, lab }] lists, merged in order; outline: "auto", false or a colour.
-	setLook({ palettes, dither, outline, shadowAlpha }) {
+	// palettes: [{ rgb, lab }] lists, merged in order; outline: "auto", false or a colour. strict: the palette
+	// was given as a list, so stamps snap to it too; otherwise they keep their own colours.
+	setLook({ palettes, dither, outline, shadowAlpha, strict = false }) {
+		this.strict = strict
 		const uniforms = this.post.uniforms
 		const key = palettes.map(list => list.length + list.map(c => c.rgb.join()).join(";")).join("|")
 		if (key !== this.paletteKey) {
@@ -558,7 +558,7 @@ export class PixelPass {
 		uniforms.shadowAlpha.value = shadowAlpha
 	}
 
-	// The nearest palette colour to a CSS colour, as 0 to 255, so a stamp matches the dice around it.
+	// The nearest palette colour to a CSS colour, as 0 to 255, so a stamp keeps to a given palette.
 	snapColor(color) {
 		const rgb = rgbOf(color)
 		let best = rgb, distance = Infinity
@@ -575,13 +575,14 @@ export class PixelPass {
 
 	// A stamp's look: its number's mask in its colours, as a texture one texel per pixel.
 	stampLook(stamp) {
-		const key = [stamp.text, stamp.font.height, stamp.fill, stamp.ring, stamp.strike, this.paletteKey].join("|")
+		const key = [stamp.text, stamp.font.height, stamp.fill, stamp.ring, stamp.strike, this.strict && this.paletteKey].join("|")
 		let look = this.stampLooks.get(key)
 		if (look) return look
 		const m = textMask(stamp.text, stamp.font, false)
 		if (stamp.strike) strikeMask(m)
-		const fill = this.snapColor(stamp.fill)
-		const ring = stamp.ring ? this.snapColor(stamp.ring) : null
+		const color = c => (this.strict ? this.snapColor(c) : rgbOf(c).map(v => Math.round(v * 255)))
+		const fill = color(stamp.fill)
+		const ring = stamp.ring ? color(stamp.ring) : null
 		const data = new Uint8Array(m.width * m.height * 4)
 		for (let y = 0; y < m.height; y++) for (let x = 0; x < m.width; x++) {
 			const cell = m.mask[y * m.width + x]

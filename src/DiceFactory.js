@@ -1702,10 +1702,7 @@ class DiceFactory {
 	pixelPalette(theme) {
 		if (!theme || !theme.pixel) return [];
 		if (theme.palette) return theme.palette;
-		const { colordata } = theme;
-		const foreground = Array.isArray(colordata.foreground) ? colordata.foreground[0] : colordata.foreground;
-		const highlights = [colordata.highlight || '#F2743B', '#B8892E', foreground && this.glowColor(foreground).color].filter(Boolean);
-		const palette = buildPalette(theme.pixel.palette, colordata, theme.samples || [], highlights);
+		const palette = buildPalette(theme.pixel.palette, theme.colordata, theme.samples || []);
 		if (theme.samples || theme.pixel.palette !== 'auto') theme.palette = palette;
 		return palette;
 	}
