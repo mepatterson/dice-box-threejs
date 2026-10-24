@@ -21,11 +21,13 @@ const FACTORS = [1, 0.75, 0.45, 0.15, 0]
 // over its numbers stays readable; any other blooms its whole emissive light, the result glow included.
 export function bloomShader(shader, only) {
 	const glow = shader.fragmentShader.includes('diceGlow') ? 'diceGlow' : 'totalEmissiveRadiance'
+	// glass lets the glow of what is inside it (a glowing liquid) through: it adds its own glow over it
+	const cover = shader.fragmentShader.includes('glassBodyAlpha') ? '0.0' : '1.0'
 	shader.uniforms.diceBloomOnly = only
 	shader.fragmentShader = shader.fragmentShader
 		.replace('void main() {', 'uniform float diceBloomOnly;\nvoid main() {')
 		.replace('#include <dithering_fragment>', `#include <dithering_fragment>
-			if ( diceBloomOnly > 0.5 ) gl_FragColor = vec4( ${glow}, 1.0 );`)
+			if ( diceBloomOnly > 0.5 ) gl_FragColor = vec4( ${glow}, ${cover} );`)
 }
 
 const COMPOSITE = new THREE.ShaderMaterial({

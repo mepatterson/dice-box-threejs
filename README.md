@@ -289,6 +289,27 @@ hold still but still show. `sparkles` sets how many per die: `"auto"` by device 
 tablet, 110 on a phone), a number, or `false` for none. The cloud is one small geometry per die type (a few
 shared layouts), an additive draw per die; the dice's physics never see it.
 
+### Liquid fill
+A glass colorset's `liquid` fills the die with a coloured liquid whose surface stays level with the world however
+the die turns, drawn in code inside the glass:
+```
+theme_customColorset: { name: "potion", foreground: "#ffffff", background: "#d8d8e0", outline: "#000000", material: "glass", glass_opacity: 0.3, liquid: "potion", liquid_color: "#9B3FE0", bloom: 1 }
+```
+- `liquid`: `"water"` (clear and light, a few bubbles) or `"potion"` (deeper, glowing faintly and fizzing; with
+  `bloom` its glow spills through the glass).
+- `liquid_level`: how full, 0 to 1 (0.6 when left out; 0 leaves the liquid out, 1 fills the die).
+- `liquid_color`: the liquid's colour, else the `accent`, else blue for water and violet for potion.
+- `liquid_slosh`: how much it sloshes, 0 (always level) to 2, 1 when left out.
+
+The surface tilts with the die's motion as it plays back, on a damped spring: shoved sideways the liquid rushes up
+the far side and settles back level over a second or two, and a hard knock also starts a ripple that dies away. The
+meniscus, a thin band along the surface's edge, is a little lighter, and bubbles rise through the liquid and vanish at
+the surface. Inner sparkles float in it; the numbers stay painted on the glass, over the liquid. Under
+`prefers-reduced-motion` the surface stays level and the bubbles hold still. A liquid die costs two draws of its own
+geometry and one of its bubbles (36 on a desktop, 28 on a tablet, 18 on a phone), plus a few multiplications per
+physics step while it sloshes; once still it costs nothing more than its bubbles' 30 frames a second. The pixel style
+leaves the liquid out.
+
 ### Glass refraction
 Glass bodies show the environment bent through them and filtered by the glass colour, lit from above as
 if it bounced off the table, and shifting across each face like a lens. `glass_refraction: false` turns

@@ -13,6 +13,7 @@ import {LAVA_GLOW, STORM_GLOW, lavaTextures, lavaShader} from "./lava.js"
 import {bloomShader} from "./bloom.js"
 import {ENERGY, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader} from "./energy.js"
 import {radialDot} from "./helpers.js"
+import {LIQUID_STYLES, LIQUIDS, LIQUID_LEVEL, LIQUID_SCALE, BUBBLE_BUDGETS, levelOf, sloshState, liquidMaterial, bubbleCloud, bubbleMaterial, applySlosh} from "./liquid.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -457,6 +458,14 @@ class DiceFactory {
 		this.energy_lines = new Map();
 		this.energy_look = { faces: true, flow: true, core: true };
 		this.bloom_only = { value: 0 };
+		this.dice_liquid = null;
+		this.liquid_level = LIQUID_LEVEL;
+		this.liquid_color = '';
+		this.liquid_slosh = 1;
+		this.bubble_clouds = new Map();
+		this.bubbleCount = BUBBLE_BUDGETS.desktop;
+		// canvas pixels per world unit at a distance of one unit, for point sprites sized in world units (the box sets it)
+		this.point_scale = { value: 1000 };
 
 		this.material_options = {
 			specular: 0x777777,
@@ -495,6 +504,8 @@ class DiceFactory {
 		this.reliefs = new Map();
 		this.inner_clouds.forEach(cloud => cloud.dispose());
 		this.inner_clouds = new Map();
+		this.bubble_clouds.forEach(cloud => cloud.dispose());
+		this.bubble_clouds = new Map();
 		if (this.dot_texture) this.dot_texture.dispose();
 		this.dot_texture = null;
 		if (this.lava_textures) Object.values(this.lava_textures).forEach(texture => texture.dispose());
@@ -1049,15 +1060,19 @@ class DiceFactory {
 		// lower id, so at the same depth it draws before the faces.
 		const interior = glass ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
 		// Inner sparkles come between the back and front faces, so they read as inside the glass.
+		// The liquid comes between them too, before the sparkles, which float in it.
+		const liquid = interior && this.dice_liquid && this.liquid_level > 0 && !this.pixel ? this.liquidParts(geom) : null;
 		const inner = interior && this.dice_inner && this.innerCount > 0 ? this.innerPoints(type, geom) : null;
 		dicemesh = new THREE.Mesh(geom, materials);
 		const energy = this.dice_material == 'energy' ? this.energyMesh(diceobj) : null;
 		if (farFur) dicemesh.add(farFur);
 		if (interior) dicemesh.add(interior);
+		if (liquid) liquid.parts.forEach(part => dicemesh.add(part));
 		if (inner) dicemesh.add(inner);
 		if (energy) dicemesh.add(energy);
 		dicemesh.interior = interior;
 		dicemesh.inner = inner;
+		dicemesh.liquid = liquid;
 		dicemesh.energy = energy;
 		// an energy die is only light: no shadow
 		dicemesh.shadowless = this.dice_material == 'energy';
@@ -1166,9 +1181,66 @@ class DiceFactory {
 		return mat;
 	}
 
-	// Whether any die in `meshes` has inner sparkles to drift or lava to flow.
+	// A glass die's liquid (liquid.js): its top and body, the die's geometry shrunk inside the glass and cut level at
+	// the surface, and its bubbles. Their plane follows the die's slosh state, which the box springs about.
+	liquidParts(geom) {
+		const style = this.dice_liquid;
+		const { height, radius } = levelOf(geom, this.liquid_level);
+		const liquid = { state: sloshState(), height, radius, slosh: this.liquid_slosh, parts: [], bubbles: null };
+		const glows = LIQUIDS[style].glow > 0 && this.theme && this.theme.bloom;
+		const part = object => {
+			object.frustumCulled = false;
+			object.castShadow = false;
+			object.raycast = () => {};
+			object.onBeforeRender = () => {
+				applySlosh(object.material.uniforms, liquid, object.parent ? object.parent.scale.x : 1);
+				object.material.uniformsNeedUpdate = true;
+			};
+			liquid.parts.push(object);
+			return object;
+		};
+		for (const top of [true, false]) {
+			const mesh = part(new THREE.Mesh(geom, this.liquidMaterial(style, top)));
+			mesh.scale.setScalar(LIQUID_SCALE);
+			mesh.blooms = Boolean(glows);
+		}
+		const count = Math.round(this.bubbleCount * LIQUIDS[style].bubbles);
+		if (count > 0) {
+			const layout = (this.bubble_layout = ((this.bubble_layout || 0) + 1) % INNER_LAYOUTS);
+			const key = `${count}|${layout}`;
+			let cloud = this.bubble_clouds.get(key);
+			if (!cloud) {
+				cloud = bubbleCloud(count, layout + 1);
+				this.bubble_clouds.set(key, cloud);
+			}
+			liquid.bubbles = part(new THREE.Points(cloud, this.bubbleMaterial(style)));
+		}
+		return liquid;
+	}
+
+	liquidMaterial(style, top) {
+		const key = `liquid|${style}|${this.liquid_color}|${top}`;
+		let mat = this.mesh_materials_cache.get(key);
+		if (mat) return mat;
+		mat = liquidMaterial({ color: this.liquid_color, style, top, bloomOnly: this.bloom_only });
+		mat.diceTheme = this.theme;
+		this.mesh_materials_cache.set(key, mat);
+		return mat;
+	}
+
+	bubbleMaterial(style) {
+		const key = `bubbles|${style}|${this.liquid_color}`;
+		let mat = this.mesh_materials_cache.get(key);
+		if (mat) return mat;
+		mat = bubbleMaterial({ color: this.liquid_color, style, time: this.drift_time, pixels: this.point_scale });
+		mat.diceTheme = this.theme;
+		this.mesh_materials_cache.set(key, mat);
+		return mat;
+	}
+
+	// Whether any die in `meshes` has inner sparkles or bubbles to drift or lava to flow.
 	drifts(meshes) {
-		return meshes.some(mesh => (mesh.inner || mesh.flows) && mesh.parent);
+		return meshes.some(mesh => (mesh.inner || mesh.flows || (mesh.liquid && mesh.liquid.bubbles)) && mesh.parent);
 	}
 
 	// A die whose texture grows fuzz gets its fur shells (fuzz.js) as a child, so they follow its pose
@@ -2361,6 +2433,10 @@ class DiceFactory {
 		this.dice_stitching = Boolean(colordata.stitching) && colordata.stitching !== 'off';
 		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : this.dice_inner == 'lightning' ? LIGHTNING_GLOW : '#FFFFFF');
 		this.inner_speed = amountOf(colordata.inner_speed, 1);
+		this.dice_liquid = this.dice_material == 'glass' && LIQUID_STYLES.includes(colordata.liquid) ? colordata.liquid : null;
+		this.liquid_level = Math.min(1, amountOf(colordata.liquid_level, LIQUID_LEVEL));
+		this.liquid_color = colordata.liquid_color || colordata.accent || (this.dice_liquid ? LIQUIDS[this.dice_liquid].color : '');
+		this.liquid_slosh = Math.min(2, amountOf(colordata.liquid_slosh, 1));
 		const growth = Number(colordata.growth);
 		this.dice_growth = colordata.growth !== undefined && colordata.growth !== null && colordata.growth !== '' && Number.isFinite(growth) ? Math.max(0, Math.round(growth * 100) / 100) : 1;
 	}

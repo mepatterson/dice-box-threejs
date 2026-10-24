@@ -22,6 +22,7 @@ die land on a value chosen in advance.
 | `src/sparkles.js` | Inner sparkles for glass dice: the point cloud inside a die's hull and its drifting material. |
 | `src/bloom.js` | Bloom for glowing dice: the bloom-only patch, the bloom layer's pass and its premultiplied composite. |
 | `src/lava.js` | The lava texture's flowing, glowing cracks: its two code-drawn textures and its material patch. |
+| `src/liquid.js` | Liquid fill for glass dice: the level, the clipped body and top shaders, the bubbles and the slosh state. |
 | `src/energy.js` | The energy material: the glowing line ribbons per die type, their shader and the numbers' patch. |
 | `src/pixel.js` | The pixel render style: options, palettes, the bitmap font and label painting, the toon patch and the low-resolution pass. |
 | `src/const/*` | Data: die definitions and vertex/face tables (`dice.js`), colorsets, textures, material presets, surfaces. |
@@ -321,6 +322,26 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   `DiceBox.frame` advances the clock and keeps requesting frames while any die on the table drifts
   (`drifting`), drawing at `DRIFT_FPS` once nothing else moves, never under `prefers-reduced-motion`
   (`still`). Clouds and the dot are freed in `dispose()`.
+- **Liquid** (`liquid.js`, `DiceFactory.liquidParts`): a glass colorset's `liquid` (water, potion) gives each die two
+  child meshes of its own geometry at `LIQUID_SCALE` (0.9) and, by style, a `Points` cloud of bubbles, created after
+  the interior and before the inner sparkles, so per die the order is back faces, liquid top, liquid body, bubbles,
+  sparkles, front faces. Both meshes discard every fragment above a plane in world space (`liquidPlane`: the normal,
+  and the height above the die's centre, from `levelOf`: the height under which a ball between the hull's inradius
+  and radius holds `liquid_level` of its volume, by bisection, scaled by the die's pop), plus a ripple along
+  `liquidWave`. The body is `FrontSide`; the top is `BackSide` with `LIQUID_TOP`, shaded as a flat surface facing the
+  plane's normal: where the front faces are cut away, the back faces below the plane show through and read as the
+  top. Both lighten a band under the plane (`liquidBand`, at least 1.5 pixels by `fwidth`) as the meniscus. They are
+  premultiplied `ShaderMaterial`s, one per theme, style, colour and side; each part's `onBeforeRender` writes its die's
+  plane into the shared uniforms (`applySlosh`, `uniformsNeedUpdate`). A glowing potion in a bloom theme is `blooms`:
+  in the bloom pass it writes its glow, and glass materials there write theirs with alpha 0 (`bloomShader`), adding to
+  what lies behind instead of covering it. Bubbles (`bubbleCloud`, `BUBBLE_BUDGETS` by device times the style's share,
+  a few shared layouts) rise in a frame with the world's axes across the ball inside the liquid on the drift clock,
+  sized in world units by `point_scale` (the canvas's pixels per unit, which `draw` keeps), and are cut at the same
+  plane. `DiceBox.slosh`, run every frame, steps each liquid die's spring once per physics step since the last frame:
+  while its throw plays back (`mesh.track`, set in `launch`) the target tilt is its recorded sideways acceleration (the
+  second difference of its positions) over gravity, capped at `SLOSH.most`, plus a little of its spin (from the
+  quaternion step) times `liquid_slosh`; a push beyond `SLOSH.jolt` times gravity grows the ripple. After the recording
+  ends the spring settles, and the loop keeps drawing until it rests. Under reduced motion nothing steps.
 - **Neon** (`neonShader`, `DiceFactory.addNeon`): `material: "neon"` is a `MeshPhysicalMaterial` with a light
   clear coat and no diffuse environment light; after `emissivemap_fragment` the body is darkened and the numbers
   (the bump canvas inverted, with a coarse mip of it as a halo) or the whole bevel (`NEON_BEVEL`) add emissive light

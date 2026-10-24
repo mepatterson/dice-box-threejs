@@ -6,6 +6,7 @@ import { DiceFactory, isMetal } from './DiceFactory.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { INNER_BUDGETS } from './sparkles.js';
+import { BUBBLE_BUDGETS } from './liquid.js';
 import { LAVA_PERIOD } from './lava.js';
 import { ENERGY_PERIOD } from './energy.js';
 import { DiceColors } from './DiceColors.js';
@@ -138,6 +139,11 @@ const RESETTLE_TIME = 0.1
 const NUDGE_TIME = 0.12
 const NUDGE_LIFT = 0.15
 const NUDGE_SLIDE = 0.45
+// A liquid's slosh (liquid.js): its surface tilts towards the die's sideways acceleration (as a share of gravity, at
+// most SLOSH.most) on a spring of SLOSH.hz with SLOSH.damping of critical, a little more for the die's spin (the walls
+// drag the liquid round); a jolt harder than SLOSH.jolt times gravity starts a ripple that fades at SLOSH.fade per
+// second. A tilt never passes SLOSH.tilt radians.
+const SLOSH = { hz: 1.8, damping: 0.14, most: 0.8, spin: 0.01, tilt: 0.9, jolt: 4, ripple: 0.12, fade: 2.8, rate: 15 }
 
 // Fur shells by device: at most `most` per die, `budget` across every fuzzy die on the table, never
 // fewer than `least`. Longer fur (a colorset's growth above 1) multiplies a die's shells by up to
@@ -323,6 +329,7 @@ class DiceBox {
 		this.DiceFactory.setBumpMapping(true);
 		this.applyFuzz();
 		this.DiceFactory.innerCount = innerBudget(this.sparkles);
+		this.DiceFactory.bubbleCount = BUBBLE_BUDGETS[deviceClass()];
 		this.bloomScale = bloomScale(this.bloom);
 		this.still = reducedMotion();
 		this.scene.onBeforeRender = () => this.updateFuzz();
@@ -1583,6 +1590,11 @@ class DiceBox {
 			if (!mesh || forced[i] === undefined || mesh.getLastValue().value == forced[i]) return
 			this.swapDiceFace(mesh, forced[i])
 		})
+		dice.forEach((mesh, j) => {
+			if (!mesh.liquid) return
+			mesh.track = { frames, j, start: startStep }
+			mesh.liquid.step = this.clockStep()
+		})
 		this.throws.push({ dice, frames, sounds, impacts, onImpact, nextImpact: 0, startStep, frame: -1, done })
 		this.rolling = true
 		this.requestFrame()
@@ -1614,6 +1626,8 @@ class DiceBox {
 			if (pixel && mesh.stamp) stamped.push(mesh)
 		}
 		this.bloomed = bloom > 0
+		const buffer = this.renderer.getDrawingBufferSize(this.bufferSize || (this.bufferSize = new THREE.Vector2()))
+		this.DiceFactory.point_scale.value = buffer.y / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)))
 		if (!themes.length) {
 			this.renderer.render(this.scene, this.camera)
 			if (bloom) this.drawBloom(bloom)
@@ -1731,6 +1745,8 @@ class DiceBox {
 		if (this.animatePops(now)) changed = true
 		this.applyPixelRatio()
 		if (changed || finished.length) this.dirty = true
+		const sloshing = this.slosh()
+		if (sloshing) this.dirty = true
 		// inner sparkles keep drifting and lava flowing once the dice have settled, at a gentler rate than the playback
 		const drifting = this.drifting()
 		if (drifting) {
@@ -1745,7 +1761,86 @@ class DiceBox {
 			this.draw()
 			this.lastDraw = now
 		}
-		if (this.throws.length || this.popping() || this.dirty || drifting) this.requestFrame()
+		if (this.throws.length || this.popping() || this.dirty || drifting || sloshing) this.requestFrame()
+	}
+
+	// Springs every liquid on the table (liquid.js) through the physics steps since the last frame, driven by its die's
+	// recorded motion while it plays back, then left to settle. Returns whether any is still moving. Never under
+	// prefers-reduced-motion, where the surface stays level.
+	slosh() {
+		if (this.still) return false
+		const step = this.clockStep()
+		let moving = false
+		for (const mesh of this.diceList) {
+			const liquid = mesh.liquid
+			if (!liquid || !mesh.parent || !(liquid.slosh > 0)) continue
+			const from = liquid.step ?? step
+			liquid.step = step
+			if (liquid.state.resting && !mesh.track) continue
+			for (let k = Math.max(from + 1, step - 30); k <= step; k++) this.sloshStep(mesh, liquid, k)
+			if (!liquid.state.resting) moving = true
+		}
+		return moving
+	}
+
+	sloshStep(mesh, liquid, k) {
+		const s = liquid.state
+		const dt = this.framerate
+		const g = this.world.gravity.length()
+		let fx = 0, fy = 0
+		const track = mesh.track
+		if (track) {
+			const f = k - track.start
+			const last = track.frames.length - 1
+			if (f >= last) mesh.track = null
+			else if (f >= 1) {
+				const a = track.frames[f - 1], b = track.frames[f], c = track.frames[f + 1], o = track.j * 7
+				const ax = (c[o] - 2 * b[o] + a[o]) / (dt * dt)
+				const ay = (c[o + 1] - 2 * b[o + 1] + a[o + 1]) / (dt * dt)
+				const az = (c[o + 2] - 2 * b[o + 2] + a[o + 2]) / (dt * dt)
+				fx = ax / g
+				fy = ay / g
+				// the turn from this step to the next, in the world's frame: c times b's inverse
+				const [bx, by, bz, bw] = [-b[o + 3], -b[o + 4], -b[o + 5], b[o + 6]]
+				const [cx, cy, cz, cw] = [c[o + 3], c[o + 4], c[o + 5], c[o + 6]]
+				const qw = cw * bw - cx * bx - cy * by - cz * bz
+				const sign = qw < 0 ? -2 / dt : 2 / dt
+				const wx = (cw * bx + cx * bw + cy * bz - cz * by) * sign
+				const wy = (cw * by - cx * bz + cy * bw + cz * bx) * sign
+				fx += SLOSH.spin * wy
+				fy -= SLOSH.spin * wx
+				// what the table, a wall or another die pushes the die with, beyond holding it up
+				const push = Math.hypot(ax, ay, az + g)
+				if (push > SLOSH.jolt * g) {
+					const jolt = Math.min(1, (push - SLOSH.jolt * g) / (40 * g))
+					s.amp = Math.min(0.25 * liquid.radius, s.amp + liquid.slosh * jolt * SLOSH.ripple * liquid.radius)
+					const across = Math.hypot(ax, ay)
+					if (across > 1e-6) {
+						s.dx = ax / across
+						s.dy = ay / across
+					}
+				}
+			}
+		}
+		const pull = Math.hypot(fx, fy)
+		const scale = liquid.slosh * (pull > SLOSH.most ? SLOSH.most / pull : 1)
+		const stiff = (2 * Math.PI * SLOSH.hz) ** 2
+		const damp = 2 * SLOSH.damping * Math.sqrt(stiff)
+		s.vx += (stiff * (fx * scale - s.tx) - damp * s.vx) * dt
+		s.vy += (stiff * (fy * scale - s.ty) - damp * s.vy) * dt
+		s.tx += s.vx * dt
+		s.ty += s.vy * dt
+		const tilt = Math.hypot(s.tx, s.ty)
+		if (tilt > SLOSH.tilt) {
+			s.tx *= SLOSH.tilt / tilt
+			s.ty *= SLOSH.tilt / tilt
+			s.vx *= 0.5
+			s.vy *= 0.5
+		}
+		s.amp *= Math.exp(-SLOSH.fade * dt)
+		s.phase = (s.phase + SLOSH.rate * dt) % (Math.PI * 2)
+		s.resting = !mesh.track && tilt < 2e-3 && Math.hypot(s.vx, s.vy) < 2e-3 && s.amp < 1e-3 * liquid.radius
+		if (s.resting) s.tx = s.ty = s.vx = s.vy = s.amp = 0
 	}
 
 	// Whether any die on the table has inner sparkles or lava to keep moving (never under reduced motion).
