@@ -116,9 +116,14 @@ export function shellGeometry(geom) {
 // One shell material per label material: its colour map and fuzz map, lit like a matte surface,
 // darker at the root and lighter towards the tips. `shells` is the shared uniform holding how many
 // shells are drawn, so the strands keep their length whatever the count.
-export function shellMaterial(base, { field, shells, dim }) {
+// With `far` it draws the shells' far sides instead, every FAR_STEP-th shell: the fur behind a glass die,
+// seen through it.
+export const FAR_STEP = 2
+
+export function shellMaterial(base, { field, shells, dim, far = false }) {
 	const fuzz = { ...FUZZ_DEFAULTS, ...base.fuzz }
-	const mat = new THREE.MeshLambertMaterial({ map: base.map, transparent: true, depthTest: true, depthWrite: true })
+	const mat = new THREE.MeshLambertMaterial({ map: base.map, transparent: true, depthTest: true, depthWrite: true, side: far ? THREE.BackSide : THREE.FrontSide })
+	const step = far ? FAR_STEP : 1
 	const uniforms = {
 		fuzzMap: { value: base.fuzzMap },
 		fuzzField: { value: field },
@@ -146,7 +151,7 @@ export function shellMaterial(base, { field, shells, dim }) {
 				varying float vFuzzT;
 				void main() {`)
 			.replace('#include <begin_vertex>', `#include <begin_vertex>
-				vFuzzT = ( float( gl_InstanceID ) + 1.0 ) / fuzzShells;
+				vFuzzT = ( float( gl_InstanceID ) + 1.0 ) * ${step.toFixed(1)} / fuzzShells;
 				vFuzzPos = position / fuzzDir.w;
 				vec3 fuzzSway = sin( vFuzzPos.yzx * vec3( 5.1, 4.3, 6.7 ) + vFuzzPos.zxy * vec3( 3.7, 5.9, 4.1 ) );
 				fuzzSway -= fuzzDir.xyz * dot( fuzzSway, fuzzDir.xyz );
@@ -186,6 +191,6 @@ export function shellMaterial(base, { field, shells, dim }) {
 					${dim ? 'diffuseColor.rgb = mix( vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) ), diffuseColor.rgb, 0.4 ) * 0.55;' : ''}
 				}`)
 	}
-	mat.customProgramCacheKey = () => (dim ? 'fuzz|dim' : 'fuzz')
+	mat.customProgramCacheKey = () => `fuzz${dim ? '|dim' : ''}${far ? '|far' : ''}`
 	return mat
 }

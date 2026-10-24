@@ -5,7 +5,7 @@ import {DICE_GEOM} from "./const/dice"
 import {woodGrain, makeSurface, spectrumLayer, shade, MOSS_GREEN, GROWING} from "./surfaces.js"
 import {fontOf, fontKey, fontMetrics} from "./fonts.js"
 import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
-import {MAX_SHELLS, FUZZ_DEFAULTS, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
+import {MAX_SHELLS, FUZZ_DEFAULTS, FAR_STEP, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
 import {pixelOf, buildPalette, fontFor, paintLabels, rgba, nearestTexture, pixelShader} from "./pixel.js"
 import {GRAINS, COATS, makeRelief} from "./normals.js"
 import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
@@ -399,6 +399,7 @@ class DiceFactory {
 		this.strand_field = null;
 		this.shell_matrix = null;
 		this.shell_sets = new WeakMap();
+		this.far_sets = new WeakMap();
 		this.no_fuzz = new THREE.MeshBasicMaterial({ visible: false });
 		this.reliefs = new Map();
 		this.dice_grain = null;
@@ -456,6 +457,7 @@ class DiceFactory {
 		if (this.lava_textures) Object.values(this.lava_textures).forEach(texture => texture.dispose());
 		this.lava_textures = null;
 		this.shell_sets = new WeakMap();
+		this.far_sets = new WeakMap();
 		this.geometries = {};
 		this.themes = new Map();
 		this.theme = null;
@@ -969,12 +971,20 @@ class DiceFactory {
 
 		this.setMaterialInfo();
 
-		// Glass shows its back faces through the front ones. Created first, the interior has the
+		const materials = this.createMaterials(diceobj, this.baseScale / 2, 1.0);
+		const glass = this.dice_material == 'glass';
+		const fuzzy = this.fuzzShells > 0 && materials.some(mat => mat.fuzzMap);
+		let dicemesh = null;
+		// Children at the die's own depth draw in the order they were created (their ids): the fur
+		// behind a glass die first, so its back faces, sparkles and front faces all lie over it.
+		const farFur = fuzzy && glass ? this.shellMesh(geom, materials, () => dicemesh.material, true) : null;
+		// Glass shows its back faces through the front ones. Created before the die, the interior has the
 		// lower id, so at the same depth it draws before the faces.
-		const interior = this.dice_material == 'glass' ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
+		const interior = glass ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
 		// Inner sparkles come between the back and front faces, so they read as inside the glass.
 		const inner = interior && this.dice_inner && this.innerCount > 0 ? this.innerPoints(type, geom) : null;
-		let dicemesh = new THREE.Mesh(geom, this.createMaterials(diceobj, this.baseScale / 2, 1.0));
+		dicemesh = new THREE.Mesh(geom, materials);
+		if (farFur) dicemesh.add(farFur);
 		if (interior) dicemesh.add(interior);
 		if (inner) dicemesh.add(inner);
 		dicemesh.interior = interior;
@@ -1049,7 +1059,8 @@ class DiceFactory {
 		}
 
 		if (diceobj.values.length <= 3) this.fixmaterials(dicemesh, diceobj.values.length);
-		return this.addFuzz(dicemesh);
+		if (fuzzy) this.addFuzz(dicemesh, farFur);
+		return dicemesh;
 	}
 
 	// A glass die's inner sparkles (sparkles.js): a cloud of soft points inside its hull, in one of a few
@@ -1090,28 +1101,37 @@ class DiceFactory {
 	// A die whose texture grows fuzz gets its fur shells (fuzz.js) as a child, so they follow its pose
 	// and pop, and never touch the physics. Created after the die, they draw right after it at the same
 	// depth. Their materials follow the die's own array, so a face swap, highlight or dimmed drop
-	// carries over to the strands; slots without a fuzz map draw nothing.
-	addFuzz(dicemesh) {
-		if (!(this.fuzzShells > 0) || !dicemesh.material.some(mat => mat.fuzzMap)) return dicemesh;
+	// carries over to the strands; slots without a fuzz map draw nothing. A glass die also has `far`:
+	// the far sides of every FAR_STEP-th shell, created before the die so they draw first and its glass
+	// lies over them. `weight` is what the die counts against the shell budget.
+	addFuzz(dicemesh, far = null) {
+		const shells = this.shellMesh(dicemesh.geometry, dicemesh.material, () => dicemesh.material, false);
+		shells.far = far;
+		shells.weight = shells.stretch * (far ? 1 + 1 / FAR_STEP : 1);
+		dicemesh.add(shells);
+		dicemesh.fuzz = shells;
+	}
+
+	// The shells of a die drawn with `materials` (its array now; `current` reads it later).
+	shellMesh(geom, materials, current, far) {
 		if (!this.shell_matrix) {
 			this.shell_matrix = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SHELLS * 16), 16);
 			for (let i = 0; i < MAX_SHELLS; i++) new THREE.Matrix4().toArray(this.shell_matrix.array, i * 16);
 		}
-		const shells = new THREE.InstancedMesh(shellGeometry(dicemesh.geometry), this.no_fuzz, MAX_SHELLS);
+		const shells = new THREE.InstancedMesh(shellGeometry(geom), this.no_fuzz, MAX_SHELLS);
 		shells.instanceMatrix = this.shell_matrix;
-		Object.defineProperty(shells, 'material', { configurable: true, get: () => this.shellMaterials(dicemesh.material), set() {} });
-		const stretch = Math.max(...dicemesh.material.map(mat => this.stretchOf(mat)));
-		const most = Math.min(MAX_SHELLS, Math.max(...dicemesh.material.map(mat => (mat.fuzz ? Math.round((mat.fuzz.shells || FUZZ_DEFAULTS.shells) * stretch) : 0))));
-		shells.onBeforeRender = () => { shells.count = Math.min(most, Math.round(this.fuzz_state.value * stretch)); };
-		shells.count = most;
+		Object.defineProperty(shells, 'material', { configurable: true, get: () => this.shellMaterials(current(), far), set() {} });
+		const stretch = Math.max(...materials.map(mat => this.stretchOf(mat)));
+		const most = Math.min(MAX_SHELLS, Math.max(...materials.map(mat => (mat.fuzz ? Math.round((mat.fuzz.shells || FUZZ_DEFAULTS.shells) * stretch) : 0))));
+		const step = far ? FAR_STEP : 1;
+		shells.onBeforeRender = () => { shells.count = Math.floor(Math.min(most, Math.round(this.fuzz_state.value * stretch)) / step); };
+		shells.count = Math.floor(most / step);
 		shells.stretch = stretch;
 		shells.frustumCulled = false;
 		shells.castShadow = false;
 		shells.raycast = () => {};
 		shells.isFuzz = true;
-		dicemesh.add(shells);
-		dicemesh.fuzz = shells;
-		return dicemesh;
+		return shells;
 	}
 
 	// Longer fur (a growth above 1) gets more shells, so its strands don't read as stacked slices: as many
@@ -1120,18 +1140,19 @@ class DiceFactory {
 		return mat && mat.fuzz ? Math.max(1, Math.min(mat.fuzz.stretch || 1, this.fuzzStretch)) : 1;
 	}
 
-	shellMaterials(materials) {
-		let shells = this.shell_sets.get(materials);
+	shellMaterials(materials, far = false) {
+		const sets = far ? this.far_sets : this.shell_sets;
+		let shells = sets.get(materials);
 		if (!shells) {
-			shells = materials.map(mat => this.shellMaterial(mat));
-			this.shell_sets.set(materials, shells);
+			shells = materials.map(mat => this.shellMaterial(mat, far));
+			sets.set(materials, shells);
 		}
 		return shells;
 	}
 
-	shellMaterial(base) {
+	shellMaterial(base, far = false) {
 		if (!base || !base.fuzzMap) return this.no_fuzz;
-		const key = `fuzz|${base.map && base.map.uuid}|${base.fuzzMap.uuid}|${Boolean(base.fuzzDim)}`;
+		const key = `fuzz|${base.map && base.map.uuid}|${base.fuzzMap.uuid}|${Boolean(base.fuzzDim)}|${far}`;
 		const variants = this.ownerOf(base).variants;
 		let mat = variants.get(key);
 		if (mat) return mat;
@@ -1139,7 +1160,7 @@ class DiceFactory {
 		const state = this.fuzz_state;
 		const stretch = this.stretchOf(base);
 		const most = Math.min(MAX_SHELLS, Math.round(((base.fuzz && base.fuzz.shells) || FUZZ_DEFAULTS.shells) * stretch));
-		mat = shellMaterial(base, { field: this.strand_field, shells: { get value() { return Math.min(most, Math.round(state.value * stretch)); } }, dim: Boolean(base.fuzzDim) });
+		mat = shellMaterial(base, { field: this.strand_field, shells: { get value() { return Math.min(most, Math.round(state.value * stretch)); } }, dim: Boolean(base.fuzzDim), far });
 		variants.set(key, mat);
 		return mat;
 	}
@@ -1797,7 +1818,7 @@ class DiceFactory {
 		compositetexture.anisotropy = this.maxAnisotropy;
 		var bumpMap = null;
 		if (glow) return {composite:compositetexture};
-		const fuzzMap = texture.fuzz && this.dice_material != 'glass' && !isTexture ? this.drawFuzz(canvasBump, index, texture) : null;
+		const fuzzMap = texture.fuzz && !isTexture ? this.drawFuzz(canvasBump, index, texture) : null;
 		// The bump canvas is grey (a height and the paint mask) and uploads as one channel, except
 		// where it also carries glitter flecks. Glass without flecks never samples it.
 		const glinting = texture.surface && this.surface(texture.surface)?.glint && (this.dice_material == 'none' || this.dice_material == 'glass');
@@ -1927,7 +1948,7 @@ class DiceFactory {
 		bumpCanvas.getContext('2d').putImageData(bump, 0, 0);
 		const bumpMap = !isTexture && this.dice_material != 'glass' ? nearestTexture(bumpCanvas, THREE.NoColorSpace) : null;
 		if (bumpMap) bumpMap.format = THREE.RedFormat;
-		const fuzz = this.pixel.fuzz && texture.fuzz && this.dice_material != 'glass' && !isTexture ? this.drawFuzz(bumpCanvas, index, texture) : null;
+		const fuzz = this.pixel.fuzz && texture.fuzz && !isTexture ? this.drawFuzz(bumpCanvas, index, texture) : null;
 		return { composite, bump: bumpMap, fuzz };
 	}
 

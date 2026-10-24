@@ -197,7 +197,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   takes only its iridescence, and a colorset's `iridescence` (0 to 1) sets or adds it on plastic and glass.
 - **Fuzz** (`fuzz.js`, `DiceFactory.addFuzz`): a texture with a `fuzz` entry gets, per label, a fuzz map
   (`drawFuzz`, half the label's size, one channel): the surface's fuzz field turned and shifted like its colours,
-  multiplied by the bump canvas so the numbers and strike bars are bare. Not on glass. Each die with a fuzz map
+  multiplied by the bump canvas so the numbers and strike bars are bare. Each die with a fuzz map
   gets an `InstancedMesh` child of up to `MAX_SHELLS` instances (one shared identity `instanceMatrix`), on
   `shellGeometry`: the die geometry's own buffers, its consecutive groups of one material slot merged (a classic
   die's group per triangle becomes one per face), plus `fuzzDir`, the area-weighted normal of all triangles at
@@ -218,6 +218,13 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   surface per value (`surface`, keyed `moss@1.5`), with the moss field shifted so it covers none of the rock at
   0 and all of it at 2, scales `fuzz.length` by it and multiplies the shells by it up to the device's `stretch`
   (`stretchOf`), which `updateFuzz` counts against the budget; past 1.5 the fuzz map stops knocking out the numbers. Shells cast no shadow and are never part of the physics.
+  A glass die gets a second shell mesh (`shellMesh` with `far`): `BackSide` materials (`far_sets`, keyed with
+  `far`) drawing every `FAR_STEP`-th shell (instance i is shell `(i + 1) * FAR_STEP`), so the fur on the die's far
+  side shows through the glass. It is created in `create` before the interior, so per die the order is far fur,
+  back faces, inner sparkles, front faces, near fur; the glass and sparkles never test depth, so they lie over the
+  far fur, and the near fur depth-tests against the far fur's depth (nested shells: every entry is nearer than
+  every exit). The die's `fuzz.weight` counts the far shells against the budget; when `budget / weights` falls
+  below `least`, `updateFuzz` hides the far fur and shares the budget over the near shells alone.
 - **Glass**: face backgrounds are drawn at `glass_opacity` alpha while labels stay opaque. The body
   opacity is a uniform (`glassOpacity`, behind the `GLASS_OPACITY` define), so glass of every opacity
   shares programs. Each
@@ -285,7 +292,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   planes shrunk to `SHRINK` of their distance (a galaxy inside the ball that fits them, as a thin disc),
   with per-point `sparkle` (phase, speed, size, seed) and `reach`, the most a sprite may drift, cached
   per die type, style and count in `INNER_LAYOUTS` layouts. The material (`innerMaterial`, one per theme
-  and style, in `materials`) is a `PointsMaterial` with the shared soft `dotTexture`, additive, no depth,
+  and style, in `materials`) is a `PointsMaterial` with the shared soft `dotTexture` (`radialDot`), additive, no depth,
   patched to move each point in the vertex shader from one shared uniform (`drift_time`): snow and
   embers run along the world's up (the model matrix transposed) fading out and in at the ends of a run,
   a galaxy turns about the die's z, and all twinkle; `gl_PointSize` scales by the point's own size.
@@ -332,7 +339,8 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   same lookup `getFaceValue` uses; on a d4 the three faces showing the result) for a variant with an
   emissive map of just the number haloed in its colour, cached per material in `glow_cache` and
   freed in `dispose()`, and adds a `Sprite` child just above the up face (on a d4, over the top
-  corner): additive, with one shared radial-gradient texture and a material per colour
+  corner): additive, with one shared soft dot texture (`radialDot` in helpers.js, computed: a canvas gradient's
+  soft alpha reached WebGL in WebKit with stray colours that showed as speckles in the glow) and a material per colour
   (`halo_cache`), so it is one extra draw per die and costs no per-die GPU memory. With `style` ink, white
   or gilded (auto picks ink when `glowColor` finds the number dark) the variant also gets the label redrawn
   with the number in the fill colour (not on a d4, where the emissive number alone recolours it), the

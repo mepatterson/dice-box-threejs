@@ -341,15 +341,25 @@ class DiceBox {
 	}
 
 	// Before every render: the fuzzy dice on the table share the shell budget, a die with longer fur
-	// counting as many times as its shells are multiplied.
+	// counting as many times as its shells are multiplied. The fur behind glass dice counts too, and is
+	// left out when the budget can't give every die at least `least` shells with it.
 	updateFuzz() {
-		let fuzzy = 0
-		for (const mesh of this.diceList) if (mesh.fuzz) fuzzy += mesh.fuzz.stretch
-		if (!fuzzy) return
+		let near = 0, all = 0
+		for (const mesh of this.diceList) {
+			if (!mesh.fuzz) continue
+			near += mesh.fuzz.stretch
+			all += mesh.fuzz.weight
+		}
+		if (!near) return
 		const { most, budget, least } = this.fuzzBudget
-		const shells = most > 0 ? Math.max(least, Math.min(most, Math.floor(budget / fuzzy))) : 0
+		const far = most > 0 && Math.floor(budget / all) >= least
+		const shells = most > 0 ? Math.max(least, Math.min(most, Math.floor(budget / (far ? all : near)))) : 0
 		this.DiceFactory.fuzz_state.value = shells
-		for (const mesh of this.diceList) if (mesh.fuzz) mesh.fuzz.visible = shells > 0
+		for (const mesh of this.diceList) {
+			if (!mesh.fuzz) continue
+			mesh.fuzz.visible = shells > 0
+			if (mesh.fuzz.far) mesh.fuzz.far.visible = far
+		}
 	}
 
 	enableShadows(){

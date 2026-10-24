@@ -475,6 +475,10 @@ and 5. Longer fur (`growth` above 1) gets up to twice the shells on a desktop an
 tablet, so it doesn't read as stacked slices, and counts that much more against the budget; a phone keeps
 its count.
 
+Glass dice grow fur too, and their fur behind the die shows through the glass: every other shell is drawn
+again on the die's far side, under its glass, so a glass die counts one and a half times against the budget.
+When the budget can't give every die its fewest shells with that fur, the far side is left bare.
+
 A moss or growth colorset's `growth` (0 to 2, 1 when left out) turns up how much of the rock the moss
 covers and how long its fur grows, together: 0 is bare stone, 1 the usual look and 2 overgrown, every face
 covered in fur twice as long. Past 1.5 the fur starts to grow over the numbers too.
@@ -489,7 +493,7 @@ fuzz: { shells: 16, length: 0.12, density: 36, thickness: 0.55, lean: 0.3, taper
 spacings), `lean` how far tips sway sideways, `taper` how much a strand narrows, `fade` how soft its tip is,
 `root` how dark its root, `tint` how far strands lean from the label's colour to `color`, `tipMix` how far
 the tips lighten to `tip`. Shells cost one more draw call per face (their runs of groups are merged) and
-the fragments of each shell; glass never grows fuzz.
+the fragments of each shell (a glass die's far side adds as many draws again).
 
 ### Pixel style
 A colorset with `pixel` draws its dice as chunky pixel art. They tumble with the same physics and land on
