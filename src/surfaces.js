@@ -454,6 +454,19 @@ function lava(size) {
 	});
 }
 
+// Storm cloud for the storm texture: the body colour darkened into soft billows with paler wisps between
+// them, smooth to the touch. Its lightning is drawn by the lava shader's storm (lava.js), which flickers over this.
+function storm(size) {
+	const n1 = valueNoise(97), n2 = valueNoise(98);
+	return build(size, [{ color: '#000000' }, { color: '#ffffff' }], 0.2, (u, v, o) => {
+		const billow = fbm(n1, u * 2.5, v * 2.5, 5);
+		const wisp = fbm(n2, u * 7, v * 7, 3);
+		o.masks[0] = 0.4 + 0.35 * smoothstep(0.3, 0.7, billow);
+		o.masks[1] = 0.12 * smoothstep(0.55, 0.85, wisp) * smoothstep(0.55, 0.25, billow);
+		o.height = 0.6 + 0.3 * billow;
+	});
+}
+
 // Leather: the body colour with a soft, uneven tone, darker and lighter patches as in a dyed hide. Its
 // pebble grain is a normal map (normals.js) the leather patch tiles finer than a label could hold.
 function leather(size) {
@@ -491,7 +504,7 @@ export function woodGrain(size = 256) {
 	return canvasFrom(size, [field]);
 }
 
-const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth, lava, leather };
+const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth, lava, storm, leather };
 
 export function makeSurface(name, size = 512, options = {}) {
 	const generate = GENERATORS[name];

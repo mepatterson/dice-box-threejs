@@ -8,6 +8,11 @@ import * as THREE from "three"
 // kept to a span both textures tile over, so it never loses precision on a phone.
 
 export const LAVA_GLOW = '#F2743B'
+// Storm (`storm` on a lava-shaded texture): the same two textures run this many times as fast and only the
+// cracks' bright middles glow, flickering sharply like electricity, in the accent or STORM_GLOW. A whole number,
+// so the textures still repeat over LAVA_PERIOD.
+export const STORM_GLOW = '#8FD8FF'
+const STORM_PACE = 6
 // Both textures repeat across this many seconds of the clock.
 export const LAVA_PERIOD = 800 / 3
 
@@ -139,12 +144,23 @@ export function lavaShader(shader, uniforms) {
 		.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 			{
 				vec2 lavaUv = vMapUv;
+				#ifdef LAVA_STORM
+					float lavaClock = lavaTime * ${STORM_PACE.toFixed(1)};
+				#else
+					float lavaClock = lavaTime;
+				#endif
 				vec4 lavaNoise = texture2D( lavaCloud, lavaUv );
-				vec2 lavaT1 = lavaUv + vec2( 1.5, - 1.5 ) * lavaTime * 0.02 + lavaNoise.xy * 2.0;
-				vec2 lavaT2 = lavaUv + vec2( - 0.5, 2.0 ) * lavaTime * 0.01 + vec2( - lavaNoise.y, lavaNoise.z ) * 0.2;
+				vec2 lavaT1 = lavaUv + vec2( 1.5, - 1.5 ) * lavaClock * 0.02 + lavaNoise.xy * 2.0;
+				vec2 lavaT2 = lavaUv + vec2( - 0.5, 2.0 ) * lavaClock * 0.01 + vec2( - lavaNoise.y, lavaNoise.z ) * 0.2;
 				float lavaPulse = texture2D( lavaCloud, lavaT1 ).a;
 				float lavaHeat = texture2D( lavaCracks, lavaT2 * 0.75 ).r;
 				float lavaMolten = max( lavaHeat * lavaPulse * 2.0 + lavaHeat * lavaHeat - 0.3, 0.0 );
+				#ifdef LAVA_STORM
+					// only the cracks' bright middles, each patch of the face flickering on its own beat
+					float stormBeat = floor( lavaTime * 16.0 ) + floor( lavaUv.x * 3.0 ) * 4.1 + floor( lavaUv.y * 3.0 ) * 7.7;
+					float stormFlicker = fract( sin( mod( stormBeat, 509.0 ) * 12.9898 ) * 43758.5453 );
+					lavaMolten = smoothstep( 0.68, 0.95, lavaHeat ) * ( 0.4 + 2.2 * lavaPulse ) * ( stormFlicker < 0.3 ? 0.12 : 0.55 + 0.9 * stormFlicker );
+				#endif
 				float lavaRock = 1.0;
 				#ifdef USE_BUMPMAP
 					lavaRock = smoothstep( 0.12, 0.4, texture2D( bumpMap, vBumpMapUv ).r );

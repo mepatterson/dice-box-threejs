@@ -301,6 +301,17 @@ export const TEXTURELIST = {
 		lava: true,
 		finish: { roughness: 0.85, clearcoat: 0.15, clearcoatRoughness: 0.5, envMapIntensity: 0.12 }
 	},
+	// a dark storm cloud with lightning crackling through it (lava.js's storm), in the colorset's accent or ice blue
+	'storm': {
+		name: 'Storm',
+		surface: 'storm',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		lava: true,
+		storm: true,
+		finish: { roughness: 0.6, clearcoat: 0.4, clearcoatRoughness: 0.2, envMapIntensity: 0.2 }
+	},
 	// pebble-grained leather in the body colour, satin, with darker creases (the pebble relief)
 	'leather': {
 		name: 'Leather',

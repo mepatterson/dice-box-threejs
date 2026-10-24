@@ -121,7 +121,7 @@ a desktop, 0.4 on a tablet and 0.3 on a phone, and while dice roll with bloom it
 so in the console). A number (0 to 1) sets the share and never adapts; `false` leaves bloom off.
 
 ### Procedural textures
-Eight textures are generated in code instead of loaded from `public/textures`, so they need no asset
+Twelve textures are generated in code instead of loaded from `public/textures`, so they need no asset
 files. Each is drawn in the colorset's own colours, with a finish to match:
 - `bone`: ivory. Faint warm staining, fine grain lines, tiny pores and the odd hairline crack, a satin
   finish and a very slight bump. Dark brown or near-black numbers read best on it.
@@ -167,6 +167,10 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   without one), white-hot where it runs hottest. The cracks are emissive, so they glow without light. They
   flow while the dice tumble and keep flowing at 30 fps once they settle, like inner sparkles, and hold
   still under `prefers-reduced-motion`. The numbers stay rock; light numbers read best.
+- `storm`: a dark storm cloud with lightning crackling through it. The body colour is darkened into soft
+  billows, and lava's two textures run over it six times as fast with only the cracks' bright middles
+  lit, each patch of a face flickering on and off on its own beat, in the `accent` (ice blue without one).
+  Works on any material, glass included; held still under `prefers-reduced-motion`.
 - `leather`: pebble-grained leather in the body colour. A soft, uneven dyed tone is drawn into the label
   and the grain is a normal map drawn in code (rounded pebbles of a cellular noise with creases between
   them), tiled finer than the label, darker and rougher in the creases, flat under the numbers. A satin
@@ -261,13 +265,23 @@ style leaves coats out.
 
 ### Inner sparkles
 A glass colorset's `inner` fills the die with a cloud of soft sparkles, drawn in code as point sprites inside
-the die's own shape, in `inner_color` or else the accent (white, or ember for embers, without one):
+the die's own shape, in `inner_color` or else the accent (white, ember for embers or ice blue for lightning,
+without one):
 ```
 theme_customColorset: { name: "snow globe", foreground: "#1B3A2A", background: "#8FD3C0", outline: "none", material: "glass", glass_opacity: 0.5, inner: "snow", inner_color: "#FFFFFF" }
 ```
 - `snow` sinks slowly, swaying, as seen from inside the tumbling die: down is the world's down.
 - `galaxy` is a thin disc of dust that turns about the die's own axis, faster near the middle.
 - `embers` rise, glowing warm.
+- `blizzard` streams fast in one steady direction of the world, whatever the die does; each flake crosses
+  the ball that fits inside the die and comes in again on the far side, so it never runs out.
+- `maelstrom` spirals fast into a tight vortex about the die's centre, round the world's up (a whirlpool
+  seen from above), faster near the middle, and starts again at the rim.
+- `lightning` is a branching bolt between two points inside the die, made by midpoint displacement and
+  drawn anew eight times a second: it flickers, sometimes misses a beat, and now and then a flash fills the
+  glass with light. Its dice keep eight layouts of their own, so neighbours strike apart. Best with `bloom`.
+
+`inner_speed` scales how fast every style moves: 1 (the default) as drawn, 0 still, 3 three times as fast.
 
 Each sparkle twinkles a little, and they keep drifting after the dice settle (at 30 frames a second, so a
 table with sparkling glass on it keeps rendering until it is cleared). Under `prefers-reduced-motion` they

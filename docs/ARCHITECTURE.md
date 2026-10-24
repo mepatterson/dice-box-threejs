@@ -295,7 +295,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   (`glassPainted` is the diffuse and emissive light directly, so the coat never leaks into the body).
   The pixel style skips both. Freed in `dispose()`.
 - **Inner sparkles** (`sparkles.js`, `DiceFactory.innerPoints`): a glass colorset's `inner` (snow, galaxy,
-  embers) gives each die a `THREE.Points` child, created between the interior and the die so its id sorts
+  embers, blizzard, maelstrom, lightning) gives each die a `THREE.Points` child, created between the interior and the die so its id sorts
   it after the back faces and before the front ones, which it reads through. `innerCloud` samples
   `innerCount` points (the box's `sparkles` budget by device, `INNER_BUDGETS`) inside the cannon hull's
   planes shrunk to `SHRINK` of their distance (a galaxy inside the ball that fits them, as a thin disc),
@@ -305,6 +305,19 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   patched to move each point in the vertex shader from one shared uniform (`drift_time`): snow and
   embers run along the world's up (the model matrix transposed) fading out and in at the ends of a run,
   a galaxy turns about the die's z, and all twinkle; `gl_PointSize` scales by the point's own size.
+  The clock is `drift_time` times the theme's `inner_speed` (the `innerSpeed` uniform, per material).
+  Blizzard, maelstrom and lightning are world-fixed (`MOTION`): their points keep their own coordinates
+  (`position`) in a frame with the world's axes, inside the ball that fits the shrunk hull (its radius in
+  `reach`), and the vertex shader takes the result into the die with the model matrix transposed (divided by
+  its scale squared, for a popping die). A blizzard flake runs along a fixed world direction across its chord of
+  that ball, wrapping; a maelstrom particle spirals in from the rim on an angle integrated in closed form
+  (`log((max + eye) / (r + eye))`, so its turn rate grows towards the middle without drifting as the clock
+  grows) and starts again on a new angle; lightning (`BOLT`) puts each sprite on a trunk or one of three
+  branches, five octaves of hashed knots pinned at both ends (midpoint displacement) offsetting it across the
+  bolt, with endpoints, branch points, visibility (three beats in four) and flicker hashed from the clock in
+  eighths of a second and the cloud's seed; sprite 0 is a flash at the middle. Lightning keeps
+  `LIGHTNING_LAYOUTS` (8) layouts, which differ only in that seed, so neighbouring dice strike apart. Under
+  reduced motion the clock stays at 0, where a bolt is always on.
   `DiceBox.frame` advances the clock and keeps requesting frames while any die on the table drifts
   (`drifting`), drawing at `DRIFT_FPS` once nothing else moves, never under `prefers-reduced-motion`
   (`still`). Clouds and the dot are freed in `dispose()`.
@@ -353,6 +366,10 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   metal paint mask). Its clock is `lava_time`, advanced with the drift clock modulo `LAVA_PERIOD`, the span both
   textures tile over, so it stays small for mediump phones; the die is `flows`, so `drifts` keeps the loop at
   `DRIFT_FPS` after the dice settle, never under reduced motion. A dimmed die (`LAVA_DIM`) glows at 30%.
+  The `storm` texture is the same patch with `LAVA_STORM`: over the `storm` surface (a darkened cloud), the textures
+  scroll `STORM_PACE` (6, a whole number, so they still tile over `LAVA_PERIOD`) times as fast, and only the cracks'
+  bright middles glow, scaled per three-by-three patch of the label by a hash of the clock in sixteenths of a second,
+  so they flicker sharply; in the accent or `STORM_GLOW`.
 - **Bump canvases** upload as one channel (`RedFormat`, a quarter of the bytes): the bump height and
   the metal paint mask only need red. Labels with glitter flecks keep RGBA, since the flecks' glint and
   tilt live in the other channels. Glass without flecks never samples that canvas, so it gets no texture.

@@ -8,8 +8,8 @@ import {GEOM_PARAMS, buildShaped, shapeOf, shapeKey} from "./shapes.js"
 import {MAX_SHELLS, FUZZ_DEFAULTS, FAR_STEP, strandField, shellGeometry, shellMaterial} from "./fuzz.js"
 import {pixelOf, buildPalette, fontFor, paintLabels, rgba, nearestTexture, pixelShader} from "./pixel.js"
 import {GRAINS, COATS, makeRelief} from "./normals.js"
-import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
-import {LAVA_GLOW, lavaTextures, lavaShader} from "./lava.js"
+import {INNER_STYLES, INNER_BUDGETS, LIGHTNING_GLOW, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
+import {LAVA_GLOW, STORM_GLOW, lavaTextures, lavaShader} from "./lava.js"
 import {bloomShader} from "./bloom.js"
 import {ENERGY, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader} from "./energy.js"
 import {radialDot} from "./helpers.js"
@@ -48,6 +48,7 @@ const dimColor = color => `#${new THREE.Color(color).multiplyScalar(0.6).getHexS
 const LIGHT_COAT = { clearcoat: 0.6, clearcoatRoughness: 0.12 };
 // Inner sparkle clouds are shared per die type: this many layouts, so neighbouring dice differ.
 const INNER_LAYOUTS = 3;
+const LIGHTNING_LAYOUTS = 8;
 
 const defaultConfig = {
 	baseScale: 100,
@@ -444,6 +445,7 @@ class DiceFactory {
 		this.coat_strength = 1;
 		this.dice_inner = null;
 		this.inner_color = '';
+		this.inner_speed = 1;
 		this.dice_growth = 1;
 		this.inner_clouds = new Map();
 		this.innerCount = INNER_BUDGETS.desktop;
@@ -1137,7 +1139,8 @@ class DiceFactory {
 	// shared layouts per die type, drifting on the box's clock.
 	innerPoints(type, geom) {
 		const style = this.dice_inner;
-		const layout = (this.inner_layout = ((this.inner_layout || 0) + 1) % INNER_LAYOUTS);
+		// lightning's layouts are its dice's bolts, so it keeps more of them, to set neighbours apart
+		const layout = (this.inner_layout = ((this.inner_layout || 0) + 1) % (style == 'lightning' ? LIGHTNING_LAYOUTS : INNER_LAYOUTS));
 		const key = `${type}|${style}|${this.innerCount}|${layout}`;
 		let cloud = this.inner_clouds.get(key);
 		if (!cloud) {
@@ -1153,11 +1156,11 @@ class DiceFactory {
 
 	innerMaterial(style) {
 		const color = this.inner_color;
-		const key = `inner|${style}|${color}|${Boolean(this.pixel)}`;
+		const key = `inner|${style}|${color}|${this.inner_speed}|${Boolean(this.pixel)}`;
 		let mat = this.mesh_materials_cache.get(key);
 		if (mat) return mat;
 		if (!this.dot_texture) this.dot_texture = dotTexture();
-		mat = innerMaterial({ map: this.dot_texture, color, style, time: this.drift_time, pixel: Boolean(this.pixel) });
+		mat = innerMaterial({ map: this.dot_texture, color, style, time: this.drift_time, speed: this.inner_speed, pixel: Boolean(this.pixel) });
 		mat.diceTheme = this.theme;
 		this.mesh_materials_cache.set(key, mat);
 		return mat;
@@ -1576,10 +1579,10 @@ class DiceFactory {
 			cloud: { value: this.lava_textures.cloud },
 			cracks: { value: this.lava_textures.cracks },
 			time: this.lava_time,
-			color: { value: new THREE.Color(this.dice_accent || LAVA_GLOW) },
+			color: { value: new THREE.Color(this.dice_accent || (this.dice_texture_rand.storm ? STORM_GLOW : LAVA_GLOW)) },
 			strength: { value: 1 },
 		};
-		mat.defines = { ...mat.defines, DICE_LAVA: '' };
+		mat.defines = { ...mat.defines, DICE_LAVA: '', ...(this.dice_texture_rand.storm && { LAVA_STORM: '' }) };
 		mat.onBeforeCompile = function (shader, renderer) {
 			compile.call(this, shader, renderer);
 			lavaShader(shader, this.lavaUniforms);
@@ -2356,7 +2359,8 @@ class DiceFactory {
 		this.coat_strength = amountOf(colordata.coat_strength, 1);
 		this.dice_inner = INNER_STYLES.includes(colordata.inner) ? colordata.inner : null;
 		this.dice_stitching = Boolean(colordata.stitching) && colordata.stitching !== 'off';
-		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : '#FFFFFF');
+		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : this.dice_inner == 'lightning' ? LIGHTNING_GLOW : '#FFFFFF');
+		this.inner_speed = amountOf(colordata.inner_speed, 1);
 		const growth = Number(colordata.growth);
 		this.dice_growth = colordata.growth !== undefined && colordata.growth !== null && colordata.growth !== '' && Number.isFinite(growth) ? Math.max(0, Math.round(growth * 100) / 100) : 1;
 	}
