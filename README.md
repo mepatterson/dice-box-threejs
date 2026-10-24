@@ -132,6 +132,14 @@ files. Each is drawn in the colorset's own colours, with a finish to match:
   without one), white-hot where it runs hottest. The cracks are emissive, so they glow without light. They
   flow while the dice tumble and keep flowing at 30 fps once they settle, like inner sparkles, and hold
   still under `prefers-reduced-motion`. The numbers stay rock; light numbers read best.
+- `leather`: pebble-grained leather in the body colour. A soft, uneven dyed tone is drawn into the label
+  and the grain is a normal map drawn in code (rounded pebbles of a cellular noise with creases between
+  them), tiled finer than the label, darker and rougher in the creases, flat under the numbers. A satin
+  finish with a faint sheen. `stitching: true` (on any procedural texture, made for leather) sews a seam
+  just inside every numbered face's edges in the `accent` (or a lighter body colour).
+```
+theme_customColorset: { name: "satchel", foreground: "#F4E6C8", background: "#6b3a1e", outline: "none", texture: "leather", accent: "#e8c27a", stitching: true }
+```
 ```
 theme_customColorset: { name: "amethyst", foreground: "#F6E7C1", background: "#4A2363", outline: "#1E0B2A", texture: "swirl", accent: "#D9B45A" }
 theme_customColorset: { name: "ivory", foreground: "#3B2414", background: "#E8DCC4", outline: "none", texture: "bone" }

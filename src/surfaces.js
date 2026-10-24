@@ -454,6 +454,18 @@ function lava(size) {
 	});
 }
 
+// Leather: the body colour with a soft, uneven tone, darker and lighter patches as in a dyed hide. Its
+// pebble grain is a normal map (normals.js) the leather patch tiles finer than a label could hold.
+function leather(size) {
+	const n1 = valueNoise(95), n2 = valueNoise(96);
+	return build(size, [{ color: '#000000' }, { color: '#ffffff' }], 0, (u, v, o) => {
+		const tone = fbm(n1, u * 2.5, v * 2.5, 4);
+		const scuff = fbm(n2, u * 9, v * 9, 3);
+		o.masks[0] = 0.1 + 0.16 * smoothstep(0.45, 0.8, tone) + 0.06 * smoothstep(0.55, 0.8, scuff);
+		o.masks[1] = 0.06 * smoothstep(0.6, 0.85, 1 - tone);
+	});
+}
+
 // A tileable wood grain, grey around mid-level, overlaid on the body colour of wood dice that have
 // no texture.
 export function woodGrain(size = 256) {
@@ -479,7 +491,7 @@ export function woodGrain(size = 256) {
 	return canvasFrom(size, [field]);
 }
 
-const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth, lava };
+const GENERATORS = { bone, swirl, stone, pearl, opal, obsidian, sparkles, moss, growth, lava, leather };
 
 export function makeSurface(name, size = 512, options = {}) {
 	const generate = GENERATORS[name];

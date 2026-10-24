@@ -15,6 +15,23 @@ import * as THREE from "three"
 import * as CANNON from "cannon-es"
 
 const SHAPED_CACHE = 24;
+
+// A numbered face's polygon in its label's UV square, as the geometry lays it out (make_geom: a regular
+// polygon round the middle; make_d10_geom: a kite), or null for a die without one.
+const FACE_SIDES = { d4: 3, d6: 4, d8: 3, d12: 5, d20: 3 };
+function facePolygon(shape) {
+	if (shape == 'd10') {
+		const w = 0.65, h = 0.85, v0 = 1 - h, v1 = 1 - (0.895 / 1.105) * h;
+		return [[0.5, v0], [0.5 + w / 2, v1], [0.5, 1], [0.5 - w / 2, v1]];
+	}
+	const sides = FACE_SIDES[shape];
+	if (!sides) return null;
+	const { tab, af } = GEOM_PARAMS[shape];
+	return Array.from({ length: sides }, (_, k) => {
+		const a = af + k * Math.PI * 2 / sides;
+		return [(Math.cos(a) + 1 + tab) / 2 / (1 + tab), (Math.sin(a) + 1 + tab) / 2 / (1 + tab)];
+	});
+}
 // A pixel label's canvas pixels per texel: its numbers are drawn turned at this resolution, so their
 // edges stay crisp under the nearest filtering.
 const PIXEL_UNIT = 4;
@@ -218,6 +235,26 @@ export const isMetal = material => /metal/.test(material || '');
 // Plastic and wood only reflect the environment; its diffuse light would wash out their colour.
 function dielectricShader(shader) {
 	shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', ''));
+}
+
+// Leather: its relief (the pebble grain) is the normal map, flattened where the bump canvas says number or
+// stitch so they read as painted on. The relief's alpha (half a roughness factor) scales the roughness and
+// marks the creases, which are darker.
+function leatherShader(shader) {
+	shader.fragmentShader = shader.fragmentShader
+		.replace('#include <roughnessmap_fragment>', `
+			float roughnessFactor = roughness;
+			float leatherFlat = 1.0;
+			#ifdef USE_BUMPMAP
+				leatherFlat = smoothstep( 0.1, 0.45, texture2D( bumpMap, vBumpMapUv ).r );
+			#endif
+			#ifdef USE_ROUGHNESSMAP
+				float leatherRough = texture2D( roughnessMap, vRoughnessMapUv ).a * 2.0;
+				roughnessFactor *= mix( 1.0, leatherRough, leatherFlat );
+				diffuseColor.rgb *= 1.0 - 0.45 * saturate( ( leatherRough - 0.9 ) / 0.35 ) * leatherFlat;
+			#endif
+		`)
+		.replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace('mapN.xy *= normalScale;', 'mapN.xy *= normalScale * leatherFlat;'));
 }
 
 // Dims and desaturates a dropped die. A pixel die only darkens, onto its palette's darker shades, which
@@ -1214,6 +1251,7 @@ class DiceFactory {
 			const surface = this.dice_texture_rand.surface && this.surface(this.dice_texture_rand.surface);
 			if (surface && surface.glint && canvasTextures.bump && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'glass')) this.addGlint(mat, canvasTextures.bump);
 			if (this.dice_texture_rand.lava) this.addLava(mat);
+			if (this.dice_texture_rand.relief && !this.pixel && (this.dice_material == 'none' || this.dice_material == 'wood')) this.addLeather(mat, this.dice_texture_rand.relief);
 			if (!this.pixel) {
 				if (this.dice_grain && isMetal(this.dice_material)) this.addGrain(mat, this.dice_grain);
 				if (this.dice_coat && mat.clearcoat > 0) this.addCoat(mat, this.dice_coat);
@@ -1292,6 +1330,20 @@ class DiceFactory {
 		mat.onBeforeCompile = function (shader, renderer) {
 			glintShader(shader, this.glintMap, glintState);
 			compile.call(this, shader, renderer);
+		};
+	}
+
+	// Leather: the texture's relief as the normal and roughness map, read by leatherShader.
+	addLeather(mat, name) {
+		const { texture, scale } = this.relief(name);
+		const compile = mat.onBeforeCompile;
+		mat.normalMap = texture;
+		mat.normalScale.set(scale, scale);
+		mat.roughnessMap = texture;
+		mat.defines = { ...mat.defines, DICE_LEATHER: '' };
+		mat.onBeforeCompile = function (shader, renderer) {
+			compile.call(this, shader, renderer);
+			leatherShader(shader);
 		};
 	}
 
@@ -1386,6 +1438,7 @@ class DiceFactory {
 		let finish = isMetal(this.dice_material) || this.dice_material == 'wood' ? this.dice_material : '';
 		if (texture.surface) finish += this.dice_material + this.dice_accent + (this.dice_rainbow ? 'rainbow' : '') + (this.growing(texture.surface) ? `growth${this.dice_growth}` : '');
 		if (this.dice_iridescence !== null) finish += `iridescence${this.dice_iridescence}`;
+		if (this.dice_stitching && texture.surface) finish += 'stitched';
 		finish += fontKey(this.labelFont(diceobj));
 		if (diceobj.shape == 'd4') {
 			return diceobj.type + textCache + texture.name + forecolor + outlinecolor + backcolor + opacity + finish;
@@ -1498,6 +1551,7 @@ class DiceFactory {
 			}
 		} else if (texture.surface && !glow) {
 			this.drawSurface(context, contextBump, ts, index, texture.surface, backcolor);
+			if (this.dice_stitching && index > 0) this.drawStitching(context, contextBump, ts, diceobj, backcolor);
 		} else if (this.dice_material == 'wood' && !glow) {
 			this.drawWoodGrain(context, contextBump, ts, index);
 		} else {
@@ -1902,6 +1956,43 @@ class DiceFactory {
 		bar(contextBump, '#000000', width + (outline ? 10 : 0));
 	}
 
+	// A stitched seam just inside the face's edges, in the accent (or a lighter body colour): short slanted
+	// stitches with a dark hole at each end, and black on the bump canvas so they are flat paint. The face
+	// is the label's polygon in UV (the geometry's: a regular polygon, or a d10's kite).
+	drawStitching(context, contextBump, ts, diceobj, backcolor) {
+		const polygon = facePolygon(diceobj.shape);
+		if (!polygon) return;
+		const inset = 0.84;
+		const points = polygon.map(([u, v]) => [(0.5 + (u - 0.5) * inset) * ts, (1 - (0.5 + (v - 0.5) * inset)) * ts]);
+		const color = this.dice_accent || `#${new THREE.Color(backcolor).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
+		const step = ts * 0.05, stitch = step * 0.6, width = ts * 0.015;
+		const ink = [context, contextBump];
+		ink.forEach(ctx => { ctx.save(); ctx.lineCap = 'round'; });
+		for (let k = 0; k < points.length; k++) {
+			const [ax, ay] = points[k], [bx, by] = points[(k + 1) % points.length];
+			const length = Math.hypot(bx - ax, by - ay);
+			const dx = (bx - ax) / length, dy = (by - ay) / length;
+			const count = Math.max(2, Math.floor((length - step) / step));
+			const start = (length - count * step) / 2;
+			for (let i = 0; i < count; i++) {
+				const t = start + i * step;
+				const x0 = ax + dx * t, y0 = ay + dy * t, x1 = x0 + dx * stitch - dy * width * 0.8, y1 = y0 + dy * stitch + dx * width * 0.8;
+				context.strokeStyle = 'rgba(0,0,0,0.45)';
+				context.lineWidth = width * 1.7;
+				context.beginPath(); context.moveTo(x0, y0 + width * 0.5); context.lineTo(x1, y1 + width * 0.5); context.stroke();
+				context.strokeStyle = color;
+				context.lineWidth = width;
+				context.beginPath(); context.moveTo(x0, y0); context.lineTo(x1, y1); context.stroke();
+				context.fillStyle = 'rgba(0,0,0,0.6)';
+				for (const [hx, hy] of [[x0, y0], [x1, y1]]) { context.beginPath(); context.arc(hx, hy, width * 0.55, 0, Math.PI * 2); context.fill(); }
+				contextBump.strokeStyle = '#000000';
+				contextBump.lineWidth = width * 1.6;
+				contextBump.beginPath(); contextBump.moveTo(x0, y0); contextBump.lineTo(x1, y1); contextBump.stroke();
+			}
+		}
+		ink.forEach(ctx => ctx.restore());
+	}
+
 	// Each face gets a shared pattern turned and shifted by its index, so neighbouring faces differ.
 	drawPattern(ctx, image, ts, index) {
 		ctx.save();
@@ -2025,6 +2116,7 @@ class DiceFactory {
 		this.dice_grain = GRAINS.includes(colordata.grain) ? colordata.grain : null;
 		this.dice_coat = COATS.includes(colordata.coat) ? colordata.coat : null;
 		this.dice_inner = INNER_STYLES.includes(colordata.inner) ? colordata.inner : null;
+		this.dice_stitching = Boolean(colordata.stitching) && colordata.stitching !== 'off';
 		this.inner_color = colordata.inner_color || colordata.accent || (this.dice_inner == 'embers' ? '#F2743B' : '#FFFFFF');
 		const growth = Number(colordata.growth);
 		this.dice_growth = colordata.growth !== undefined && colordata.growth !== null && colordata.growth !== '' && Number.isFinite(growth) ? Math.max(0, Math.round(growth * 100) / 100) : 1;

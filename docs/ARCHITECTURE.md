@@ -291,6 +291,12 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   `DiceBox.frame` advances the clock and keeps requesting frames while any die on the table drifts
   (`drifting`), drawing at `DRIFT_FPS` once nothing else moves, never under `prefers-reduced-motion`
   (`still`). Clouds and the dot are freed in `dispose()`.
+- **Leather**: the `leather` surface is only a dyed tone; its texture entry names a `relief` (`pebble` in
+  normals.js, a wrapped Voronoi of rounded pebbles), which `addLeather` sets as the normal and roughness map on
+  plastic or wood (not in the pixel style). `leatherShader` flattens the normal where the bump canvas is dark (numbers,
+  stitches), scales the roughness by the relief's alpha and darkens the creases it marks. A colorset's `stitching`
+  (`drawStitching`) draws a seam inside each numbered face's polygon in label UV (`facePolygon`: the regular polygon
+  `make_geom` lays out from `GEOM_PARAMS`, or the d10's kite), in colour on the label and black on the bump canvas.
 - **Lava** (`lava.js`, `DiceFactory.addLava`): the `lava` texture draws a dark basalt label (`surfaces.js`) and
   gets an `onBeforeCompile` patch (`DICE_LAVA`) after `emissivemap_fragment`: two tiling textures drawn once per
   box (`lavaTextures`: a four-channel cloud noise, 128px, and a Voronoi crack field, 256px) scroll against each

@@ -301,6 +301,16 @@ export const TEXTURELIST = {
 		lava: true,
 		finish: { roughness: 0.85, clearcoat: 0.15, clearcoatRoughness: 0.5, envMapIntensity: 0.12 }
 	},
+	// pebble-grained leather in the body colour, satin, with darker creases (the pebble relief)
+	'leather': {
+		name: 'Leather',
+		surface: 'leather',
+		source: '',
+		source_bump: '',
+		material: 'none',
+		relief: 'pebble',
+		finish: { roughness: 0.55, clearcoat: 0, clearcoatRoughness: 1, sheen: 0.1, sheenColor: '#ffffff', sheenRoughness: 0.5, envMapIntensity: 0.15 }
+	},
 	'none': {
 		name: 'none',
 		composite: 'source-over',

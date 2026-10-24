@@ -10,6 +10,8 @@ import * as THREE from "three"
 // Coats (`coat`), a clearcoatNormalMap over any material with a clear coat: scratched (fine hairline
 // scratches), flake (metallic flake, tiny facets each tilted its own way) and weave (a carbon-fibre
 // weave of round tows).
+// Pebble (the leather texture's grain): rounded pebbles of a jittered cellular noise with creases between
+// them, rougher in the creases; its roughness factor also tells the leather patch where they are.
 
 const SIZE = 256
 
@@ -244,6 +246,37 @@ function weave(size) {
 	})
 }
 
+// Pebble grain: each cell of a wrapped Voronoi a low rounded pebble, F2 - F1 small where two meet, so
+// the creases run between them. A fine noise keeps the tops from reading as plastic. Rougher in the creases.
+function pebble(size) {
+	const next = random(161)
+	const N = 12
+	const cells = []
+	for (let i = 0; i < N; i++) {
+		for (let j = 0; j < N; j++) cells.push([(i + 0.1 + 0.8 * next()) / N, (j + 0.1 + 0.8 * next()) / N, 0.7 + 0.3 * next()])
+	}
+	const fine = noise(162, 96), lumps = noise(163, 6)
+	return fromHeight(size, 7, (u, v, o) => {
+		const ci = Math.floor(u * N), cj = Math.floor(v * N)
+		let f1 = Infinity, f2 = Infinity, lift = 1
+		for (let di = -2; di <= 2; di++) {
+			for (let dj = -2; dj <= 2; dj++) {
+				const c = cells[(((ci + di) % N) + N) % N * N + (((cj + dj) % N) + N) % N]
+				const d = wrapped(u, v, c[0], c[1])
+				if (d < f1) {
+					f2 = f1
+					f1 = d
+					lift = c[2]
+				} else if (d < f2) f2 = d
+			}
+		}
+		const crease = 1 - smoothstep(0, 0.2 / N, f2 - f1)
+		const dome = Math.sqrt(smoothstep(0, 0.9 / N, f2 - f1))
+		o.height = 0.3 + 0.45 * dome * lift - 0.2 * crease + 0.05 * (fine(u, v) - 0.5) + 0.08 * (lumps(u, v) - 0.5)
+		o.roughness = 0.85 + 0.4 * crease + 0.08 * (fine(v, u) - 0.5)
+	})
+}
+
 const RELIEFS = {
 	brushed: { draw: brushed, repeat: 1.5, scale: 0.5 },
 	hammered: { draw: hammered, repeat: 1.2, scale: 1 },
@@ -251,6 +284,7 @@ const RELIEFS = {
 	scratched: { draw: scratched, repeat: 1.5, scale: 1 },
 	flake: { draw: flake, repeat: 4, scale: 1.2 },
 	weave: { draw: weave, repeat: 10, scale: 0.6 },
+	pebble: { draw: pebble, repeat: 3, scale: 0.8 },
 }
 
 // A relief's texture, tiled `repeat` times across a face, with the normal scale that suits it.
