@@ -358,7 +358,7 @@ whole throw (2 to 4 s); a single re-simulation of all moving dice would change f
   ages and moves the pool by the real frame time (nothing moves under reduced motion), fills the attributes' update
   ranges and keeps the loop going until the last particle has been drawn away, and while throws play it arcs between
   crackling dice that pass close (`arc`: points along a midpoint-displaced bolt, at most every `ARC.every` per pair).
-  A `splash` also leaves splotches (`DiceParticles.splotch`, the internal kind `splotch`, shape `blot`: a ragged edge by
+  As `impacts`, a `splash` throws no burst, settle ring or fumble fizzle; it only leaves splotches (four, `CRIT_BLOTS`, round a crit) (`DiceParticles.splotch`, the internal kind `splotch`, shape `blot`: a ragged edge by
   angle in the sprite shader, a couple of satellite dots): static, 2.5 to 3.5 seconds, held for 35% of their life, at
   most `BLOT_SHARE` of the pool with the oldest evicted first. While only they are left (`pool.fast` false, no throw
   playing) `stepParticles` returns `"slow"`: it ages and redraws `BLOT_FPS` times a second, woken by a timer

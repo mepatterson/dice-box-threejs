@@ -49,6 +49,7 @@ const BLOT_QUIET = 0.35
 const RING = 18
 const CRIT = 70
 const FIZZLE = 14
+const CRIT_BLOTS = 4
 const ARC = { reach: 3.2, every: 0.07, points: 20 }
 
 const pick = (list, r = Math.random()) => list[Math.floor(r * list.length) % list.length]
@@ -284,12 +285,13 @@ export class DiceParticles {
 	}
 
 	// A die's impact: a burst sized by the impact's speed (0 to 1), out from under it on the table, or every way off
-	// another die.
+	// another die. A splash throws no burst: it only leaves splotches.
 	impact(look, unit, point, speed, centre = null) {
 		if (speed < BURST.quiet) return
-		const n = Math.round((BURST.least + BURST.most * speed) * look.amount)
-		this.burst(look.impacts, look.colors[look.impacts], unit, point, n, { speed: 0.6 + 0.8 * speed, centre })
-		if (look.impacts == 'splash' && speed > BLOT_QUIET) {
+		if (look.impacts != 'splash') {
+			const n = Math.round((BURST.least + BURST.most * speed) * look.amount)
+			this.burst(look.impacts, look.colors[look.impacts], unit, point, n, { speed: 0.6 + 0.8 * speed, centre })
+		} else if (speed > BLOT_QUIET) {
 			const blots = speed > 0.7 && look.amount >= 1 ? 2 : 1
 			for (let j = 0; j < blots; j++) {
 				const a = Math.random() * Math.PI * 2, d = (j ? 0.5 + Math.random() : 0) * unit
@@ -299,18 +301,21 @@ export class DiceParticles {
 	}
 
 	settle(look, unit, x, y) {
-		this.ring(look.impacts, look.colors[look.impacts], unit, x, y, Math.round(RING * look.amount))
-		if (look.impacts == 'splash') {
-			const a = Math.random() * Math.PI * 2
-			this.splotch(look.colors.splash, unit, x + Math.cos(a) * unit * 1.1, y + Math.sin(a) * unit * 1.1, 0.4)
-		}
+		if (look.impacts != 'splash') return this.ring(look.impacts, look.colors[look.impacts], unit, x, y, Math.round(RING * look.amount))
+		const a = Math.random() * Math.PI * 2
+		this.splotch(look.colors.splash, unit, x + Math.cos(a) * unit * 1.1, y + Math.sin(a) * unit * 1.1, 0.4)
 	}
 
 	// A crit's spectacle: a big burst every way over the die and a wide ring; a fumble's fizzle: a few greyed particles
-	// that barely leave it and droop.
+	// that barely leave it and droop. A splash's crit is a ring of big splotches round the die, and its fumble nothing.
 	flourish(look, unit, p, type) {
 		const kind = look.impacts, colors = look.colors[kind]
-		if (type == 'crit') {
+		if (kind == 'splash') {
+			if (type == 'crit') for (let j = 0; j < CRIT_BLOTS; j++) {
+				const a = (j + Math.random() * 0.5) / CRIT_BLOTS * Math.PI * 2, d = unit * (1 + 0.4 * Math.random())
+				this.splotch(colors, unit, p.x + Math.cos(a) * d, p.y + Math.sin(a) * d, 1)
+			}
+		} else if (type == 'crit') {
 			this.burst(kind, colors, unit, { x: p.x, y: p.y, z: p.z + unit * 0.6 }, Math.round(CRIT * look.amount), { speed: 1.8, life: 1, size: 1.2 })
 			this.ring(kind, colors, unit, p.x, p.y, Math.round(RING * 1.5 * look.amount), { speed: 3, size: 1.2 })
 		} else if (type == 'fumble') {
