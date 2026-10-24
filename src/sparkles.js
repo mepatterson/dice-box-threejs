@@ -1,4 +1,5 @@
 import * as THREE from "three"
+import { radialDot } from "./helpers.js"
 
 // Inner sparkles: a cloud of soft point sprites inside a glass die (`inner` on the colorset: snow, galaxy
 // or embers, in `inner_color` or the accent). The cloud is a THREE.Points child of the die, sampled inside
@@ -23,19 +24,7 @@ function random(seed) {
 
 // A soft round dot, brightest in the middle.
 export function dotTexture() {
-	const canvas = document.createElement('canvas')
-	canvas.width = canvas.height = 32
-	const context = canvas.getContext('2d')
-	const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16)
-	gradient.addColorStop(0, 'rgba(255,255,255,1)')
-	gradient.addColorStop(0.25, 'rgba(255,255,255,0.7)')
-	gradient.addColorStop(0.6, 'rgba(255,255,255,0.15)')
-	gradient.addColorStop(1, 'rgba(255,255,255,0)')
-	context.fillStyle = gradient
-	context.fillRect(0, 0, 32, 32)
-	const texture = new THREE.CanvasTexture(canvas)
-	texture.colorSpace = THREE.SRGBColorSpace
-	return texture
+	return radialDot(32, [[0, 1], [0.25, 0.7], [0.6, 0.15], [1, 0]])
 }
 
 // The die's hull as planes (normal, distance from the middle), from its cannon shape.

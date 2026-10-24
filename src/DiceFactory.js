@@ -11,6 +11,7 @@ import {GRAINS, COATS, makeRelief} from "./normals.js"
 import {INNER_STYLES, INNER_BUDGETS, dotTexture, innerCloud, innerMaterial} from "./sparkles.js"
 import {LAVA_GLOW, lavaTextures, lavaShader} from "./lava.js"
 import {bloomShader} from "./bloom.js"
+import {radialDot} from "./helpers.js"
 
 import * as THREE from "three"
 import * as CANNON from "cannon-es"
@@ -353,18 +354,7 @@ function glintShader(shader, map, state) {
 
 // A soft round glow, white in the middle and fading to nothing at the rim.
 function haloTexture() {
-	const canvas = document.createElement('canvas');
-	canvas.width = canvas.height = 64;
-	const context = canvas.getContext('2d');
-	const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
-	gradient.addColorStop(0, 'rgba(255,255,255,0.9)');
-	gradient.addColorStop(0.35, 'rgba(255,255,255,0.45)');
-	gradient.addColorStop(1, 'rgba(255,255,255,0)');
-	context.fillStyle = gradient;
-	context.fillRect(0, 0, 64, 64);
-	const texture = new THREE.CanvasTexture(canvas);
-	texture.colorSpace = THREE.SRGBColorSpace;
-	return texture;
+	return radialDot(64, [[0, 0.9], [0.35, 0.45], [1, 0]]);
 }
 
 class DiceFactory {
