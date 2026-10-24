@@ -8,12 +8,24 @@ import * as THREE from "three"
 // dust off stone, bone, wood and leather, splashes off a liquid, crackle off storm and lightning, glints off the rest.
 // Every particle on the table lives in one pool (`DiceParticles`): capped by device, simulated on the CPU (a few
 // hundred at most) and drawn as one THREE.Points of shaped, premultiplied sprites. None lives past about a second, so a
-// table at rest has nothing left to draw. Under prefers-reduced-motion they appear and fade where they are.
+// table at rest has nothing left to draw. A splash also leaves splotches, flat ragged blots in the liquid's colour on the
+// table that hold for several seconds and fade; they take at most BLOT_SHARE of the pool, the oldest going first, and
+// while only they are left the box redraws a few times a second (`DiceParticles.fast`). Under prefers-reduced-motion
+// they appear and fade where they are.
 
 export const PARTICLE_KINDS = ['embers', 'frost', 'leaves', 'glitter', 'sparks', 'dust', 'splash', 'crackle', 'glints']
 // The most particles alive at once, by device.
 export const PARTICLE_BUDGETS = { desktop: 700, tablet: 450, phone: 260 }
-const SHAPE = { dot: 0, star: 1, leaf: 2, streak: 3 }
+const SHAPE = { dot: 0, star: 1, leaf: 2, streak: 3, blot: 4 }
+// A splotch is not a kind a colorset picks: it is what a splash leaves. It holds for the first `hold` of its life
+// (a share, 0 to 1), then fades.
+const BLOT = 'splotch'
+const KIND_NAMES = [...PARTICLE_KINDS, BLOT]
+// The share of the pool splotches may take, their sizes (times a die's radius) and the fps the box redraws at while
+// only splotches are left.
+export const BLOT_SHARE = 0.3
+const BLOT_SIZES = [0.7, 1, 1.4]
+export const BLOT_FPS = 6
 // Per kind, in die radii and seconds: sprite shape, size, life, launch speed, upward pull (negative falls), drag,
 // growth over its life, spin, twinkle, positional jitter per frame, and the colours it takes without a theme's.
 // bounce: what is kept of the speed off the table.
@@ -27,11 +39,13 @@ const KINDS = {
 	splash: { shape: 'dot', size: [0.09, 0.16], life: [0.35, 0.65], speed: [1.6, 3.4], up: -7, drag: 0.5, bounce: 0.2, colors: ['#4FA8E0', '#9AD2F2', '#FFFFFF'] },
 	crackle: { shape: 'star', size: [0.14, 0.26], life: [0.1, 0.3], speed: [0.5, 2], up: 0, drag: 4, jitter: 0.12, twinkle: 1, colors: ['#9FD8FF', '#FFFFFF', '#6FB8FF'] },
 	glints: { shape: 'star', size: [0.18, 0.32], life: [0.25, 0.5], speed: [0.2, 0.9], up: 0, drag: 3, twinkle: 0.8, colors: ['#FFFFFF', '#FFF2D6'] },
+	splotch: { shape: 'blot', size: [0.5, 0.6], life: [4, 6], speed: [0, 0], up: 0, drag: 10, grow: 0.12, alpha: 0.8, hold: 0.4, colors: ['#4FA8E0'] },
 }
 // Trails: dice faster than `min` radii per second shed up to `rate` particles a second, at full rate from `full`.
 const TRAIL = { min: 8, full: 30, rate: 45 }
 // Bursts: an impact of speed s (0 to 1) throws `least + most * s` particles; slower than `quiet` throws none.
 const BURST = { least: 3, most: 18, quiet: 0.06 }
+const BLOT_QUIET = 0.15
 const RING = 18
 const CRIT = 70
 const FIZZLE = 14
@@ -126,7 +140,15 @@ const FRAGMENT = `
 		if ( vLook.x < 0.5 ) a = pow( max( 1.0 - r, 0.0 ), 1.5 );
 		else if ( vLook.x < 1.5 ) a = max( exp( - r * r * 10.0 ), 0.85 * ( exp( - abs( p.x ) * 14.0 - abs( p.y ) * 2.4 ) + exp( - abs( p.y ) * 14.0 - abs( p.x ) * 2.4 ) ) );
 		else if ( vLook.x < 2.5 ) a = smoothstep( 1.0, 0.8, length( p * vec2( 1.0, 2.4 ) ) ) * ( 1.0 - 0.35 * smoothstep( 0.08, 0.0, abs( p.y ) ) );
-		else a = pow( max( 1.0 - length( p * vec2( 1.0, 3.2 ) ), 0.0 ), 1.2 );
+		else if ( vLook.x < 3.5 ) a = pow( max( 1.0 - length( p * vec2( 1.0, 3.2 ) ), 0.0 ), 1.2 );
+		else {
+			float th = atan( p.y, p.x );
+			float edge = 0.6 + 0.13 * sin( 3.0 * th + 1.0 ) + 0.09 * sin( 5.0 * th + 2.3 ) + 0.06 * sin( 9.0 * th + 0.7 ) + 0.035 * sin( 15.0 * th );
+			a = smoothstep( edge + 0.05, edge - 0.03, r );
+			a = max( a, smoothstep( 0.19, 0.13, length( p - vec2( 0.68, 0.46 ) ) ) );
+			a = max( a, smoothstep( 0.13, 0.08, length( p - vec2( - 0.62, - 0.52 ) ) ) );
+			a *= 0.88 + 0.12 * smoothstep( 0.0, 0.5, r );
+		}
 		a *= vTint.a;
 		if ( a < 0.004 ) discard;
 		gl_FragColor = vec4( vTint.rgb, min( a, 1.0 ) );
@@ -145,7 +167,8 @@ export class DiceParticles {
 		this.state = new Float32Array(budget * 8) // age, life, size, unit, angle, seed, kind, alpha
 		this.tint = new Float32Array(budget * 4)
 		this.look = new Float32Array(budget * 3)
-		this.kinds = PARTICLE_KINDS.map(name => KINDS[name])
+		this.kinds = KIND_NAMES.map(name => KINDS[name])
+		this.fast = false
 		const geometry = new THREE.BufferGeometry()
 		this.positions = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage)
 		this.tints = new THREE.BufferAttribute(this.tint, 4).setUsage(THREE.DynamicDrawUsage)
@@ -176,7 +199,8 @@ export class DiceParticles {
 	// `unit`; null when the pool is full.
 	spawn(kind, colors, unit, x, y, z, vx, vy, vz, { life = 1, size = 1, alpha = 1, gray = 0 } = {}) {
 		if (this.live >= this.budget) return null
-		const k = PARTICLE_KINDS.indexOf(kind)
+		const k = KIND_NAMES.indexOf(kind)
+		if (kind !== BLOT) this.fast = true
 		const spec = KINDS[kind]
 		const i = this.live++
 		this.pos.set([x, y, z], i * 3)
@@ -186,6 +210,22 @@ export class DiceParticles {
 		this.color.set([c.r + (g - c.r) * gray, c.g + (g - c.g) * gray, c.b + (g - c.b) * gray], i * 3)
 		this.state.set([0, between(spec.life) * life, between(spec.size) * size * unit, unit, Math.random() * Math.PI * 2, Math.random(), k, (spec.alpha ?? 1) * alpha], i * 8)
 		return i
+	}
+
+	// A splotch of `colors[0]` flat on the table at x, y, sized by `strength` (0 to 1) in one of a few sizes. When the pool
+	// or the splotches' share of it is full the oldest splotch goes; null when there is none to go.
+	splotch(colors, unit, x, y, strength = 0.5, { life = 1, alpha = 1 } = {}) {
+		let count = 0, oldest = -1, age = -1
+		for (let i = 0; i < this.live; i++) {
+			if (this.state[i * 8 + 6] !== KIND_NAMES.length - 1) continue
+			count++
+			if (this.state[i * 8] > age) { age = this.state[i * 8]; oldest = i }
+		}
+		if (count >= Math.floor(this.budget * BLOT_SHARE) || this.live >= this.budget) {
+			if (oldest < 0) return null
+			this.remove(oldest)
+		}
+		return this.spawn(BLOT, [colors[0]], unit, x, y, 0.02 * unit, 0, 0, 0, { life, alpha, size: pick(BLOT_SIZES) * (0.6 + 0.8 * strength) })
 	}
 
 	// `n` particles from a point, flung at the kind's speed times `speed`: outwards across the table from `centre` when
@@ -238,6 +278,7 @@ export class DiceParticles {
 			const z = Math.max(0.1 * unit, p.z - v.z / s * unit * back)
 			const spread = between(spec.speed) * unit * 0.5
 			const a = Math.random() * Math.PI * 2
+			if (kind == 'splash' && Math.random() < 0.12) this.splotch(look.colors[kind], unit, x, y, 0.2, { alpha: 0.7 })
 			if (this.spawn(kind, look.colors[kind], unit, x, y, z, v.x * 0.06 + Math.cos(a) * spread, v.y * 0.06 + Math.sin(a) * spread, Math.random() * spread * 0.5, { life: 0.8, size: 0.8 }) === null) return
 		}
 	}
@@ -248,10 +289,21 @@ export class DiceParticles {
 		if (speed < BURST.quiet) return
 		const n = Math.round((BURST.least + BURST.most * speed) * look.amount)
 		this.burst(look.impacts, look.colors[look.impacts], unit, point, n, { speed: 0.6 + 0.8 * speed, centre })
+		if (look.impacts == 'splash' && speed > BLOT_QUIET) {
+			const blots = Math.max(1, Math.round((1 + 2 * speed) * look.amount))
+			for (let j = 0; j < blots; j++) {
+				const a = Math.random() * Math.PI * 2, d = (j ? 0.5 + Math.random() : 0) * unit
+				this.splotch(look.colors.splash, unit, point.x + Math.cos(a) * d, point.y + Math.sin(a) * d, speed)
+			}
+		}
 	}
 
 	settle(look, unit, x, y) {
 		this.ring(look.impacts, look.colors[look.impacts], unit, x, y, Math.round(RING * look.amount))
+		if (look.impacts == 'splash') for (let j = 0; j < 2; j++) {
+			const a = Math.random() * Math.PI * 2
+			this.splotch(look.colors.splash, unit, x + Math.cos(a) * unit * 1.1, y + Math.sin(a) * unit * 1.1, 0.4)
+		}
 	}
 
 	// A crit's spectacle: a big burst every way over the die and a wide ring; a fumble's fizzle: a few greyed particles
@@ -301,7 +353,7 @@ export class DiceParticles {
 	// whether any is left.
 	update(dt, still = false) {
 		const { pos, vel, state, color, tint, look } = this
-		let i = 0
+		let i = 0, fast = false
 		while (i < this.live) {
 			const s = i * 8
 			state[s] += dt
@@ -310,9 +362,10 @@ export class DiceParticles {
 				continue
 			}
 			const spec = this.kinds[state[s + 6]]
+			if (spec.shape != 'blot') fast = true
 			const unit = state[s + 3]
 			const p = i * 3
-			if (!still) {
+			if (!still && spec.shape != 'blot') {
 				const drag = Math.exp(-spec.drag * dt)
 				vel[p] *= drag
 				vel[p + 1] *= drag
@@ -333,11 +386,16 @@ export class DiceParticles {
 			}
 			const t = state[s] / state[s + 1]
 			let alpha = Math.min(1, t * 12) * Math.pow(1 - t, 1.2) * state[s + 7]
+			if (spec.hold) {
+				const fade = Math.min(1, Math.max(0, (t - spec.hold) / (1 - spec.hold)))
+				alpha = Math.min(1, t * 25) * (1 - fade * fade * (3 - 2 * fade)) * state[s + 7]
+			}
 			if (spec.twinkle && !still) alpha *= 1 - spec.twinkle * 0.5 * (1 + Math.sin(state[s] * 38 + state[s + 5] * 60)) * 0.5
 			tint.set([color[p], color[p + 1], color[p + 2], alpha], i * 4)
 			look.set([state[s + 2] * (1 + (spec.grow || 0) * t), SHAPE[spec.shape], state[s + 4]], p)
 			i++
 		}
+		this.fast = fast
 		const geometry = this.points.geometry
 		geometry.setDrawRange(0, this.live)
 		for (const attribute of [this.positions, this.tints, this.looks]) {

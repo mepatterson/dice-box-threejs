@@ -7,7 +7,7 @@ import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { INNER_BUDGETS } from './sparkles.js';
 import { BUBBLE_BUDGETS } from './liquid.js';
-import { DiceParticles, PARTICLE_BUDGETS } from './particles.js';
+import { DiceParticles, PARTICLE_BUDGETS, BLOT_FPS } from './particles.js';
 import { LAVA_PERIOD } from './lava.js';
 import { ENERGY_PERIOD } from './energy.js';
 import { DiceColors } from './DiceColors.js';
@@ -1805,7 +1805,7 @@ class DiceBox {
 		const sloshing = this.slosh()
 		if (sloshing) this.dirty = true
 		const shedding = this.stepParticles(now)
-		if (shedding) this.dirty = true
+		if (shedding === 'fast' || (shedding === 'slow' && this.slowDue)) this.dirty = true
 		// inner sparkles keep drifting and lava flowing once the dice have settled, at a gentler rate than the playback
 		const drifting = this.drifting()
 		if (drifting) {
@@ -1820,7 +1820,17 @@ class DiceBox {
 			this.draw()
 			this.lastDraw = now
 		}
-		if (this.throws.length || this.popping() || this.dirty || drifting || sloshing || shedding) this.requestFrame()
+		if (this.throws.length || this.popping() || this.dirty || drifting || sloshing || shedding === 'fast') this.requestFrame()
+		else if (shedding === 'slow') this.wakeForSplotches()
+	}
+
+	// Asks for the next frame when the next splotch step is due, without a loop in between.
+	wakeForSplotches() {
+		if (this.wakeTimer) return
+		this.wakeTimer = setTimeout(() => {
+			this.wakeTimer = 0
+			this.requestFrame()
+		}, Math.max(0, 1000 / BLOT_FPS - (performance.now() - this.particleClock)))
 	}
 
 	particleBudget() {
@@ -1886,11 +1896,18 @@ class DiceBox {
 		}
 	}
 
-	// Ages the pool, after arcs between crackling dice passing close. Returns whether any particle is left to draw.
+	// Ages the pool, after arcs between crackling dice passing close. Returns "fast" while a particle that needs the
+	// frame rate is left (or the pool needs one more frame to be drawn away), "slow" while only splotches are, which
+	// age and redraw BLOT_FPS times a second (`slowDue` says when one is due), and false once nothing is left.
 	stepParticles(now) {
 		const pool = this.pool
 		if (!pool) return false
-		const dt = this.particleClock ? Math.min(0.05, Math.max(0, (now - this.particleClock) / 1000)) : 0
+		const slow = !this.throws.length && pool.live > 0 && !pool.fast
+		if (slow && this.particleClock && now - this.particleClock < 1000 / BLOT_FPS - 2) {
+			this.slowDue = false
+			return 'slow'
+		}
+		const dt = this.particleClock ? Math.max(0, (now - this.particleClock) / 1000) : 0
 		this.particleClock = now
 		if (this.throws.length) {
 			const crackling = this.diceList.filter(mesh => mesh.parent && mesh.particleLook && mesh.particleLook.trails === "crackle")
@@ -1904,8 +1921,9 @@ class DiceBox {
 			this.particleClock = 0
 			return false
 		}
-		// one more frame once the last particle is gone, so it is drawn away
-		return pool.update(dt, this.still) || true
+		const left = pool.update(Math.min(slow ? 0.5 : 0.05, dt), this.still)
+		this.slowDue = slow && left
+		return left && slow ? 'slow' : 'fast'
 	}
 
 	// Springs every liquid on the table (liquid.js) through the physics steps since the last frame, driven by its die's
@@ -2206,6 +2224,7 @@ class DiceBox {
 
 	// Tears the box down: stops listening for resizes, frees GPU memory and removes the canvas.
 	dispose() {
+		clearTimeout(this.wakeTimer);
 		this.clearDice();
 		window.removeEventListener("resize", this.onResize);
 		if (this.resizeObserver) this.resizeObserver.disconnect();
