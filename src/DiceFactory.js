@@ -13,7 +13,7 @@ import {LAVA_GLOW, STORM_GLOW, lavaTextures, lavaShader} from "./lava.js"
 import {bloomShader} from "./bloom.js"
 import {ENERGY, ENERGY_COLORS, ENERGY_GLOW, energyLines, energyLinesMaterial, energyNumberShader, energySecond} from "./energy.js"
 import {radialDot} from "./helpers.js"
-import {LIQUID_STYLES, LIQUIDS, LIQUID_LEVEL, LIQUID_SCALE, BUBBLE_BUDGETS, levelOf, sloshState, liquidMaterial, bubbleCloud, bubbleMaterial, applySlosh} from "./liquid.js"
+import {LIQUID_STYLES, LIQUIDS, LIQUID_LEVEL, LIQUID_SCALE, LIQUID_VEIL, BUBBLE_BUDGETS, levelOf, sloshState, liquidMaterial, bubbleCloud, bubbleMaterial, applySlosh} from "./liquid.js"
 import {particleLook} from "./particles.js"
 
 import * as THREE from "three"
@@ -81,8 +81,9 @@ const defaultConfig = {
 // reflections are cut on glass, which would drop three's own film term, so this one is added after.
 // The body opacity, refraction and edges are uniforms, so glass dice of every colorset share programs.
 const GLASS_FILM = { STRENGTH: 0.16, SATURATION: 1.3, FLOOR: 0.18 };
-function glassShader(shader, { refraction, edges, opacity }) {
+function glassShader(shader, { refraction, edges, opacity, veil }) {
 	shader.uniforms.glassRefraction = refraction;
+	shader.uniforms.glassVeil = veil;
 	shader.uniforms.glassEdges = edges;
 	shader.uniforms.glassOpacity = opacity;
 	shader.vertexShader = shader.vertexShader
@@ -94,6 +95,7 @@ function glassShader(shader, { refraction, edges, opacity }) {
 			uniform vec3 glassRefraction;
 			uniform float glassEdges;
 			uniform float glassOpacity;
+			uniform float glassVeil;
 			varying vec3 vGlassOffset;
 			vec3 glassSeen( vec3 dir ) {
 				#ifdef ENVMAP_TYPE_CUBE_UV
@@ -141,6 +143,8 @@ function glassShader(shader, { refraction, edges, opacity }) {
 			#endif
 			#ifdef GLASS_INTERIOR
 				glassBody = glassFilter * glassLight * 0.6;
+			#elif ! defined( GLASS_EDGE )
+				glassBodyAlpha *= glassVeil;
 			#endif
 			glassBodyAlpha = saturate( glassBodyAlpha );
 			float glassShine = max( glassSpecular.r, max( glassSpecular.g, glassSpecular.b ) );
@@ -1062,7 +1066,7 @@ class DiceFactory {
 		const interior = glass ? new THREE.Mesh(geom, this.interiorMaterial()) : null;
 		// Inner sparkles come between the back and front faces, so they read as inside the glass.
 		// The liquid comes between them too, before the sparkles, which float in it.
-		const liquid = interior && this.dice_liquid && this.liquid_level > 0 && !this.pixel ? this.liquidParts(geom) : null;
+		const liquid = interior && this.liquidFilled() ? this.liquidParts(geom) : null;
 		const inner = interior && this.dice_inner && this.innerCount > 0 ? this.innerPoints(type, geom) : null;
 		dicemesh = new THREE.Mesh(geom, materials);
 		const energy = this.dice_material == 'energy' ? this.energyMesh(diceobj) : null;
@@ -1222,6 +1226,11 @@ class DiceFactory {
 			liquid.bubbles = part(new THREE.Points(cloud, this.bubbleMaterial(style)));
 		}
 		return liquid;
+	}
+
+	// Whether this colorset's glass dice hold a liquid (liquidParts, made in create on the same terms).
+	liquidFilled() {
+		return this.dice_material == 'glass' && Boolean(this.dice_liquid) && this.liquid_level > 0 && !this.pixel;
 	}
 
 	liquidMaterial(style, top) {
@@ -1394,7 +1403,7 @@ class DiceFactory {
 			}
 			const preset = this.materialPreset();
 			if (this.dice_material == 'glass') {
-				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity);
+				mat = this.makeGlass(new THREE.MeshPhysicalMaterial(preset), this.body_opacity, this.liquidFilled() ? LIQUID_VEIL : 1);
 			} else if (preset && (preset.anisotropy || preset.clearcoat || preset.sheen)) {
 				mat = new THREE.MeshPhysicalMaterial(preset);
 			} else if (preset) {
@@ -1669,11 +1678,11 @@ class DiceFactory {
 		};
 	}
 
-	makeGlass(mat, opacity) {
+	makeGlass(mat, opacity, veil = 1) {
 		const theme = this.theme || this;
 		mat.premultipliedAlpha = true;
 		mat.defines = { ...mat.defines, GLASS_OPACITY: 'glassOpacity' };
-		mat.glassUniforms = { refraction: theme.refraction, edges: theme.edges, opacity: { value: opacity } };
+		mat.glassUniforms = { refraction: theme.refraction, edges: theme.edges, opacity: { value: opacity }, veil: { value: veil } };
 		mat.onBeforeCompile = glassCompile;
 		mat.isGlass = true;
 		if (theme.refraction.value.y > 0) mat.defines.GLASS_REFRACTION = '';

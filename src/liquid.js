@@ -22,6 +22,9 @@ export const LIQUIDS = {
 export const LIQUID_LEVEL = 0.6
 // Bubbles per die by device, before the style's share.
 export const BUBBLE_BUDGETS = { desktop: 36, tablet: 28, phone: 18 }
+// The faces of a die with a liquid veil it at this share of glass_opacity, so the liquid shows in its own colour; the
+// edges, shine and refraction still say glass.
+export const LIQUID_VEIL = 0.2
 // The liquid is the die shrunk to this, so the glass keeps a wall round it.
 export const LIQUID_SCALE = 0.9
 // The surface catches the key light from here (the same as glass's glints).
@@ -89,6 +92,10 @@ const FRAGMENT = `
 	varying vec3 vLiquidCentre;
 	varying vec3 vLiquidNormal;
 	${SURFACE}
+	// Towards white by t as the eye sees it: mixed in linear light, even a little white turns a deep red pink.
+	vec3 liquidLift( vec3 c, float t ) {
+		return pow( mix( pow( c, vec3( 1.0 / 2.2 ) ), vec3( 1.0 ), t ), vec3( 2.2 ) );
+	}
 	void main() {
 		float below = liquidBelow( vLiquidWorld - vLiquidCentre );
 		float line = max( liquidBand * 0.45, fwidth( below ) * 2.0 );
@@ -99,11 +106,11 @@ const FRAGMENT = `
 		}
 		float fill = 1.0 - smoothstep( 0.0, line, abs( below ) );
 		float glow = 1.0 - smoothstep( 0.0, liquidBand * 3.5, abs( below ) );
-		vec3 pale = mix( liquidColor, vec3( 1.0 ), 0.85 );
+		vec3 pale = liquidLift( liquidColor, 0.7 );
 		#ifdef LIQUID_TOP
 			if ( below < 0.0 ) {
 				// the empty glass above the surface: a pale veil, clearer than the filled part
-				vec3 air = mix( liquidColor, vec3( 1.0 ), 0.6 );
+				vec3 air = liquidLift( liquidColor, 0.6 );
 				float veil = ( 0.22 + 0.3 * glow ) * ( 1.0 - fill );
 				gl_FragColor = vec4( mix( air * veil, pale, fill ), max( veil, fill ) );
 				#include <colorspace_fragment>
@@ -120,14 +127,14 @@ const FRAGMENT = `
 		#ifdef LIQUID_TOP
 			float facing = abs( dot( liquidPlane.xyz, view ) );
 			float shine = pow( max( dot( liquidPlane.xyz, normalize( liquidKey + view ) ), 0.0 ), 80.0 );
-			color = mix( liquidColor, vec3( 1.0 ), 0.2 + 0.25 * ( 1.0 - facing ) ) * 1.1 + shine * 0.7;
+			color = liquidLift( liquidColor, 0.04 + 0.2 * ( 1.0 - facing ) ) * 1.1 + shine * 0.7;
 			alpha = mix( liquidLook.x + 0.18, 1.0, 0.45 * ( 1.0 - facing ) );
 		#else
 			float facing = abs( dot( normalize( vLiquidNormal ), view ) );
-			color = mix( liquidColor, vec3( 1.0 ), 0.18 ) * mix( 1.1, 0.6, liquidLook.y * ( 1.0 - facing ) );
+			color = liquidLift( liquidColor, 0.05 ) * mix( 1.1, 0.6, liquidLook.y * ( 1.0 - facing ) );
 			alpha = liquidLook.x + ( 1.0 - liquidLook.x ) * liquidLook.y * 0.6 * ( 1.0 - facing );
 		#endif
-		color = mix( color, mix( liquidColor, vec3( 1.0 ), 0.5 ), max( rim * 0.8, glow * 0.5 ) );
+		color = mix( color, liquidLift( liquidColor, 0.4 ), max( rim * 0.8, glow * 0.5 ) );
 		alpha = mix( alpha, 1.0, rim * 0.6 );
 		color = mix( color, pale, fill );
 		alpha = mix( alpha, 1.0, fill );
